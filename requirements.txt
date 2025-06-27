@@ -1,9 +1,12 @@
+# 핵심 의존성
 streamlit==1.28.2
 requests==2.31.0
 aiohttp==3.9.1
-pandas==2.1.3
-plotly==5.18.0
-python-dotenv==1.0.0
-openai==0.28.1
-redis==5.0.1
-asyncio-redis==0.16.0
+pandas==2.2.3  # Python 3.13 호환 버전
+python-dotenv==1.0.1
+openai==0.28.1  # 안정적인 버전
+numpy==1.26.4  # pandas와 호환
+
+# 추가 보안 및 성능 최적화
+asyncio  # 비동기 처리 (기본 포함)
+typing  # 타입 힌트 (기본 포함)
