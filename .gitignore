@@ -1,0 +1,55 @@
+# 환경변수
+.env
+.env.local
+.env.production
+
+# 가상환경
+venv/
+env/
+ENV/
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 로그
+*.log
+logs/
+
+# 캐시
+.cache/
+*.cache
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Redis dump
+dump.rdb
+
+# 테스트
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 기타
+*.bak
+*.tmp
+node_modules/
