@@ -31,11 +31,9 @@ import re
 load_dotenv()
 
 # ===== 설정 =====
-LAW_API_KEY = os.getenv('LAW_API_KEY', '')
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
-
-# OpenAI 설정
-openai.api_key = OPENAI_API_KEY
+# 환경변수에서 기본값 로드 (없으면 빈 문자열)
+DEFAULT_LAW_API_KEY = os.getenv('LAW_API_KEY', '')
+DEFAULT_OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -124,6 +122,17 @@ if 'fact_sheet' not in st.session_state:
     st.session_state.fact_sheet = {}
 if 'case_documents' not in st.session_state:
     st.session_state.case_documents = []
+if 'law_api_key' not in st.session_state:
+    st.session_state.law_api_key = DEFAULT_LAW_API_KEY
+if 'openai_api_key' not in st.session_state:
+    st.session_state.openai_api_key = DEFAULT_OPENAI_API_KEY
+
+# API 키 접근 함수
+def get_law_api_key():
+    return st.session_state.law_api_key
+
+def get_openai_api_key():
+    return st.session_state.openai_api_key
 
 # ===== AI 변호사 프롬프트 템플릿 =====
 AI_LAWYER_SYSTEM_PROMPT = """
@@ -152,9 +161,8 @@ AI_LAWYER_SYSTEM_PROMPT = """
 # ===== 법률 AI 엔진 클래스 =====
 class LegalAIEngine:
     """AI 변호사 사고 프로세스를 구현한 법률 AI 엔진"""
-    
+
     def __init__(self):
-        self.law_api_key = LAW_API_KEY
         self.api_endpoints = {
             'search': 'https://www.law.go.kr/DRF/lawSearch.do',
             'service': 'https://www.law.go.kr/DRF/lawService.do'
@@ -171,6 +179,11 @@ class LegalAIEngine:
             'decc': 'decc',         # 행정심판례
             'trty': 'trty'          # 조약
         }
+
+    @property
+    def law_api_key(self):
+        """세션 상태에서 API 키 가져오기"""
+        return get_law_api_key()
         
     async def analyze_query(self, user_query: str) -> ServiceType:
         """사용자 질의 분석 및 서비스 유형 판단"""
@@ -1016,17 +1029,47 @@ async def main():
 
         st.divider()
 
-        # API 상태
+        # API 키 설정
+        st.header("🔑 API 키 설정")
+
+        # 법제처 API 키 입력
+        law_key_input = st.text_input(
+            "법제처 API 키",
+            value=st.session_state.law_api_key,
+            type="default",
+            placeholder="법제처 API 키를 입력하세요",
+            help="https://open.law.go.kr 에서 발급받은 API 키"
+        )
+        if law_key_input != st.session_state.law_api_key:
+            st.session_state.law_api_key = law_key_input
+            st.rerun()
+
+        # OpenAI API 키 입력
+        openai_key_input = st.text_input(
+            "OpenAI API 키",
+            value=st.session_state.openai_api_key,
+            type="password",
+            placeholder="OpenAI API 키를 입력하세요 (선택)",
+            help="GPT-5 AI 분석 기능 사용 시 필요"
+        )
+        if openai_key_input != st.session_state.openai_api_key:
+            st.session_state.openai_api_key = openai_key_input
+            openai.api_key = openai_key_input
+            st.rerun()
+
+        st.divider()
+
+        # API 상태 표시
         st.header("🔌 시스템 상태")
-        if LAW_API_KEY:
+        if st.session_state.law_api_key:
             st.success("✅ 법제처 API 연결")
         else:
             st.error("❌ 법제처 API 키 필요")
 
-        if OPENAI_API_KEY:
+        if st.session_state.openai_api_key:
             st.success("✅ GPT-5 AI 엔진 활성화")
         else:
-            st.error("❌ OpenAI API 키 필요")
+            st.warning("⚠️ OpenAI API 키 없음 (AI 분석 제한)")
 
         # 새 대화 시작 버튼
         if st.button("🔄 새 상담 시작", use_container_width=True):
@@ -1123,22 +1166,9 @@ async def main():
 
 # ===== 앱 실행 =====
 if __name__ == "__main__":
-    # API 키 확인
-    if not LAW_API_KEY:
-        st.error("⚠️ 법제처 API 키가 설정되지 않았습니다!")
-        st.info("""
-        ### 설정 방법:
-        1. [법제처 Open API](https://open.law.go.kr)에서 API 키 발급
-        2. `.env` 파일 생성 후 다음 내용 추가:
-        ```
-        LAW_API_KEY=발급받은_API_키
-        OPENAI_API_KEY=OpenAI_API_키
-        ```
-        """)
-        st.stop()
-    
-    if not OPENAI_API_KEY:
-        st.warning("⚠️ OpenAI API 키가 없어 AI 분석 기능이 제한됩니다.")
-    
+    # OpenAI API 키 설정 (세션 상태에서)
+    if st.session_state.openai_api_key:
+        openai.api_key = st.session_state.openai_api_key
+
     # 비동기 실행
     asyncio.run(main())
