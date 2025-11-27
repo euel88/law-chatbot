@@ -157,9 +157,19 @@ class LegalAIEngine:
         self.law_api_key = LAW_API_KEY
         self.api_endpoints = {
             'search': 'https://www.law.go.kr/DRF/lawSearch.do',
-            'law': 'https://www.law.go.kr/DRF/lawService.do',
-            'prec': 'https://www.law.go.kr/DRF/precService.do',
-            'admrul': 'https://www.law.go.kr/DRF/admRulService.do'
+            'service': 'https://www.law.go.kr/DRF/lawService.do'
+        }
+        # API target 코드 정의
+        self.api_targets = {
+            'law': 'law',           # 현행법령
+            'eflaw': 'eflaw',       # 현행법령(시행일 기준)
+            'prec': 'prec',         # 판례
+            'admrul': 'admrul',     # 행정규칙
+            'ordin': 'ordin',       # 자치법규
+            'detc': 'detc',         # 헌재결정례
+            'expc': 'expc',         # 법령해석례
+            'decc': 'decc',         # 행정심판례
+            'trty': 'trty'          # 조약
         }
         
     async def analyze_query(self, user_query: str) -> ServiceType:
@@ -182,20 +192,30 @@ class LegalAIEngine:
     async def search_legal_data(self, query: str) -> Dict:
         """법제처 API를 통한 종합 법률 데이터 검색"""
         async with aiohttp.ClientSession() as session:
-            # 병렬로 법령, 판례, 행정규칙 검색
+            # 병렬로 모든 법률 데이터 소스 검색
             tasks = [
                 self._search_laws(session, query),
                 self._search_precedents(session, query),
-                self._search_admin_rules(session, query)
+                self._search_admin_rules(session, query),
+                self._search_ordinances(session, query),
+                self._search_constitutional_cases(session, query),
+                self._search_legal_interpretations(session, query),
+                self._search_admin_rulings(session, query),
+                self._search_treaties(session, query)
             ]
-            
+
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            
+
             return {
                 'query': query,
                 'laws': results[0] if not isinstance(results[0], Exception) else [],
                 'precedents': results[1] if not isinstance(results[1], Exception) else [],
                 'admin_rules': results[2] if not isinstance(results[2], Exception) else [],
+                'ordinances': results[3] if not isinstance(results[3], Exception) else [],
+                'constitutional_cases': results[4] if not isinstance(results[4], Exception) else [],
+                'legal_interpretations': results[5] if not isinstance(results[5], Exception) else [],
+                'admin_rulings': results[6] if not isinstance(results[6], Exception) else [],
+                'treaties': results[7] if not isinstance(results[7], Exception) else [],
                 'search_time': datetime.now().isoformat()
             }
     
@@ -267,15 +287,245 @@ class LegalAIEngine:
         except Exception as e:
             logger.error(f"행정규칙 검색 오류: {e}")
         return []
-    
+
+    async def _search_ordinances(self, session, query: str) -> List[Dict]:
+        """자치법규 검색"""
+        params = {
+            'OC': self.law_api_key,
+            'target': 'ordin',
+            'query': query,
+            'type': 'json',
+            'display': 10
+        }
+
+        try:
+            async with session.get(
+                self.api_endpoints['search'],
+                params=params,
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return data.get('ordin', [])
+        except Exception as e:
+            logger.error(f"자치법규 검색 오류: {e}")
+        return []
+
+    async def _search_constitutional_cases(self, session, query: str) -> List[Dict]:
+        """헌재결정례 검색"""
+        params = {
+            'OC': self.law_api_key,
+            'target': 'detc',
+            'query': query,
+            'type': 'json',
+            'display': 10
+        }
+
+        try:
+            async with session.get(
+                self.api_endpoints['search'],
+                params=params,
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return data.get('detc', [])
+        except Exception as e:
+            logger.error(f"헌재결정례 검색 오류: {e}")
+        return []
+
+    async def _search_legal_interpretations(self, session, query: str) -> List[Dict]:
+        """법령해석례 검색"""
+        params = {
+            'OC': self.law_api_key,
+            'target': 'expc',
+            'query': query,
+            'type': 'json',
+            'display': 10
+        }
+
+        try:
+            async with session.get(
+                self.api_endpoints['search'],
+                params=params,
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return data.get('expc', [])
+        except Exception as e:
+            logger.error(f"법령해석례 검색 오류: {e}")
+        return []
+
+    async def _search_admin_rulings(self, session, query: str) -> List[Dict]:
+        """행정심판례 검색"""
+        params = {
+            'OC': self.law_api_key,
+            'target': 'decc',
+            'query': query,
+            'type': 'json',
+            'display': 10
+        }
+
+        try:
+            async with session.get(
+                self.api_endpoints['search'],
+                params=params,
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return data.get('decc', [])
+        except Exception as e:
+            logger.error(f"행정심판례 검색 오류: {e}")
+        return []
+
+    async def _search_treaties(self, session, query: str) -> List[Dict]:
+        """조약 검색"""
+        params = {
+            'OC': self.law_api_key,
+            'target': 'trty',
+            'query': query,
+            'type': 'json',
+            'display': 10
+        }
+
+        try:
+            async with session.get(
+                self.api_endpoints['search'],
+                params=params,
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return data.get('trty', [])
+        except Exception as e:
+            logger.error(f"조약 검색 오류: {e}")
+        return []
+
+    async def get_law_detail(self, law_id: str) -> Dict:
+        """법령 본문 상세 조회"""
+        params = {
+            'OC': self.law_api_key,
+            'target': 'law',
+            'ID': law_id,
+            'type': 'json'
+        }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    self.api_endpoints['service'],
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=15)
+                ) as response:
+                    if response.status == 200:
+                        return await response.json()
+        except Exception as e:
+            logger.error(f"법령 상세 조회 오류: {e}")
+        return {}
+
+    async def get_precedent_detail(self, prec_id: str) -> Dict:
+        """판례 본문 상세 조회"""
+        params = {
+            'OC': self.law_api_key,
+            'target': 'prec',
+            'ID': prec_id,
+            'type': 'json'
+        }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    self.api_endpoints['service'],
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=15)
+                ) as response:
+                    if response.status == 200:
+                        return await response.json()
+        except Exception as e:
+            logger.error(f"판례 상세 조회 오류: {e}")
+        return {}
+
+    async def get_constitutional_case_detail(self, case_id: str) -> Dict:
+        """헌재결정례 본문 상세 조회"""
+        params = {
+            'OC': self.law_api_key,
+            'target': 'detc',
+            'ID': case_id,
+            'type': 'json'
+        }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    self.api_endpoints['service'],
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=15)
+                ) as response:
+                    if response.status == 200:
+                        return await response.json()
+        except Exception as e:
+            logger.error(f"헌재결정례 상세 조회 오류: {e}")
+        return {}
+
+    async def get_legal_interpretation_detail(self, interp_id: str) -> Dict:
+        """법령해석례 본문 상세 조회"""
+        params = {
+            'OC': self.law_api_key,
+            'target': 'expc',
+            'ID': interp_id,
+            'type': 'json'
+        }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    self.api_endpoints['service'],
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=15)
+                ) as response:
+                    if response.status == 200:
+                        return await response.json()
+        except Exception as e:
+            logger.error(f"법령해석례 상세 조회 오류: {e}")
+        return {}
+
+    async def get_admin_ruling_detail(self, ruling_id: str) -> Dict:
+        """행정심판례 본문 상세 조회"""
+        params = {
+            'OC': self.law_api_key,
+            'target': 'decc',
+            'ID': ruling_id,
+            'type': 'json'
+        }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    self.api_endpoints['service'],
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=15)
+                ) as response:
+                    if response.status == 200:
+                        return await response.json()
+        except Exception as e:
+            logger.error(f"행정심판례 상세 조회 오류: {e}")
+        return {}
+
     def create_fact_sheet(self, user_input: str, legal_data: Dict) -> Dict:
         """사실관계 정리 (Fact Sheet 작성)"""
         fact_sheet = {
             'query': user_input,
             'timestamp': datetime.now(),
-            'related_laws_count': len(legal_data['laws']),
-            'related_precedents_count': len(legal_data['precedents']),
-            'related_admin_rules_count': len(legal_data['admin_rules']),
+            'related_laws_count': len(legal_data.get('laws', [])),
+            'related_precedents_count': len(legal_data.get('precedents', [])),
+            'related_admin_rules_count': len(legal_data.get('admin_rules', [])),
+            'related_ordinances_count': len(legal_data.get('ordinances', [])),
+            'related_constitutional_cases_count': len(legal_data.get('constitutional_cases', [])),
+            'related_legal_interpretations_count': len(legal_data.get('legal_interpretations', [])),
+            'related_admin_rulings_count': len(legal_data.get('admin_rulings', [])),
+            'related_treaties_count': len(legal_data.get('treaties', [])),
             'key_facts': self._extract_key_facts(user_input),
             'timeline': self._extract_timeline(user_input)
         }
@@ -369,7 +619,7 @@ class LegalAIEngine:
 
         try:
             response = openai.ChatCompletion.create(
-                model="gpt-4" if "gpt-4" in openai.api_key else "gpt-3.5-turbo",
+                model="gpt-5",
                 messages=[
                     {"role": "system", "content": AI_LAWYER_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
@@ -427,7 +677,7 @@ class LegalAIEngine:
 
         try:
             response = openai.ChatCompletion.create(
-                model="gpt-4" if "gpt-4" in openai.api_key else "gpt-3.5-turbo",
+                model="gpt-5",
                 messages=[
                     {"role": "system", "content": AI_LAWYER_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
@@ -526,7 +776,7 @@ AI 변호사 GPT (전자서명)
 
         try:
             response = openai.ChatCompletion.create(
-                model="gpt-4" if "gpt-4" in openai.api_key else "gpt-3.5-turbo",
+                model="gpt-5",
                 messages=[
                     {"role": "system", "content": AI_LAWYER_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
@@ -542,33 +792,79 @@ AI 변호사 GPT (전자서명)
     def _build_context(self, legal_data: Dict) -> str:
         """검색 결과를 컨텍스트로 구성"""
         context_parts = []
-        
+
         # 법령 정보
-        if legal_data['laws']:
+        if legal_data.get('laws'):
             laws_text = "\n[관련 법령]\n"
             for idx, law in enumerate(legal_data['laws'][:10], 1):
-                laws_text += f"{idx}. {law.get('법령명', '')}\n"
-                laws_text += f"   - {law.get('조문내용', '')[:200]}...\n\n"
+                laws_text += f"{idx}. {law.get('법령명한글', law.get('법령명', ''))}\n"
+                laws_text += f"   - 소관부처: {law.get('소관부처명', '')}\n"
+                laws_text += f"   - 시행일자: {law.get('시행일자', '')}\n\n"
             context_parts.append(laws_text)
-        
+
         # 판례 정보
-        if legal_data['precedents']:
+        if legal_data.get('precedents'):
             prec_text = "\n[관련 판례]\n"
             for idx, prec in enumerate(legal_data['precedents'][:7], 1):
                 prec_text += f"{idx}. {prec.get('사건명', '')} ({prec.get('선고일자', '')})\n"
                 prec_text += f"   - 법원: {prec.get('법원명', '')}\n"
-                prec_text += f"   - 판시사항: {prec.get('판시사항', '')[:200]}...\n\n"
+                prec_text += f"   - 사건번호: {prec.get('사건번호', '')}\n\n"
             context_parts.append(prec_text)
-        
+
         # 행정규칙 정보
-        if legal_data['admin_rules']:
+        if legal_data.get('admin_rules'):
             admin_text = "\n[관련 행정규칙]\n"
             for idx, rule in enumerate(legal_data['admin_rules'][:5], 1):
                 admin_text += f"{idx}. {rule.get('행정규칙명', '')}\n"
-                admin_text += f"   - 소관부처: {rule.get('소관부처', '')}\n"
-                admin_text += f"   - 내용: {rule.get('내용', '')[:150]}...\n\n"
+                admin_text += f"   - 소관부처: {rule.get('소관부처명', rule.get('소관부처', ''))}\n\n"
             context_parts.append(admin_text)
-        
+
+        # 자치법규 정보
+        if legal_data.get('ordinances'):
+            ordin_text = "\n[관련 자치법규]\n"
+            for idx, ordin in enumerate(legal_data['ordinances'][:5], 1):
+                ordin_text += f"{idx}. {ordin.get('자치법규명', '')}\n"
+                ordin_text += f"   - 지자체: {ordin.get('지자체기관명', ordin.get('자치단체명', ''))}\n"
+                ordin_text += f"   - 종류: {ordin.get('자치법규종류', '')}\n\n"
+            context_parts.append(ordin_text)
+
+        # 헌재결정례 정보
+        if legal_data.get('constitutional_cases'):
+            const_text = "\n[관련 헌재결정례]\n"
+            for idx, case in enumerate(legal_data['constitutional_cases'][:5], 1):
+                const_text += f"{idx}. {case.get('사건명', '')} ({case.get('종국일자', '')})\n"
+                const_text += f"   - 사건번호: {case.get('사건번호', '')}\n\n"
+            context_parts.append(const_text)
+
+        # 법령해석례 정보
+        if legal_data.get('legal_interpretations'):
+            interp_text = "\n[관련 법령해석례]\n"
+            for idx, interp in enumerate(legal_data['legal_interpretations'][:5], 1):
+                interp_text += f"{idx}. {interp.get('안건명', '')}\n"
+                interp_text += f"   - 안건번호: {interp.get('안건번호', '')}\n"
+                interp_text += f"   - 회신기관: {interp.get('회신기관명', '')}\n"
+                interp_text += f"   - 회신일자: {interp.get('회신일자', '')}\n\n"
+            context_parts.append(interp_text)
+
+        # 행정심판례 정보
+        if legal_data.get('admin_rulings'):
+            ruling_text = "\n[관련 행정심판례]\n"
+            for idx, ruling in enumerate(legal_data['admin_rulings'][:5], 1):
+                ruling_text += f"{idx}. {ruling.get('사건명', '')} ({ruling.get('의결일자', '')})\n"
+                ruling_text += f"   - 사건번호: {ruling.get('사건번호', '')}\n"
+                ruling_text += f"   - 재결청: {ruling.get('재결청', '')}\n"
+                ruling_text += f"   - 재결구분: {ruling.get('재결구분명', '')}\n\n"
+            context_parts.append(ruling_text)
+
+        # 조약 정보
+        if legal_data.get('treaties'):
+            treaty_text = "\n[관련 조약]\n"
+            for idx, treaty in enumerate(legal_data['treaties'][:5], 1):
+                treaty_text += f"{idx}. {treaty.get('조약명', treaty.get('조약명한글', ''))}\n"
+                treaty_text += f"   - 체결일자: {treaty.get('체결일자', '')}\n"
+                treaty_text += f"   - 발효일자: {treaty.get('발효일자', '')}\n\n"
+            context_parts.append(treaty_text)
+
         return "\n".join(context_parts)
 
 # ===== Streamlit UI 함수들 =====
@@ -655,49 +951,83 @@ async def main():
     with col2:
         st.markdown("""
         <div style="text-align: right; padding: 1rem;">
-            <small>v4.0 | 변호사 사고 프로세스 구현</small>
+            <small>v5.0 | GPT-5 + 법제처 API 전체 연동</small>
         </div>
         """, unsafe_allow_html=True)
     
     # 사이드바
     with st.sidebar:
         st.header("🎯 서비스 안내")
-        
+
         st.markdown("""
         ### 제공 서비스
         1. **법률 정보 제공**
            - 일반적인 법률 지식
            - 절차 및 요건 설명
-        
+
         2. **계약서 검토**
            - 독소조항 분석
            - 리스크 평가
            - 수정안 제시
-        
+
         3. **법률자문의견서**
            - IRAC 분석
            - 리스크 매트릭스
            - Action Plan 제공
         """)
-        
+
         st.divider()
-        
+
+        # 검색 데이터 소스 안내
+        st.header("📚 검색 데이터 소스")
+        with st.expander("법제처 API 연동 목록", expanded=False):
+            st.markdown("""
+            - 📜 **법령** (현행법령, 시행일 기준)
+            - ⚖️ **판례** (대법원, 하급심)
+            - 📋 **행정규칙**
+            - 🏛️ **자치법규** (조례, 규칙)
+            - 🏛️ **헌재결정례**
+            - 📖 **법령해석례**
+            - 📑 **행정심판례**
+            - 🌐 **조약**
+            """)
+
+        st.divider()
+
         # 현재 서비스 타입 표시
         if st.session_state.current_service:
             st.info(f"현재 모드: {st.session_state.current_service.value}")
-        
+
+        # 검색 통계 표시
+        if st.session_state.fact_sheet:
+            st.header("📊 검색 결과 통계")
+            fact = st.session_state.fact_sheet
+            cols = st.columns(2)
+            with cols[0]:
+                st.metric("법령", fact.get('related_laws_count', 0))
+                st.metric("판례", fact.get('related_precedents_count', 0))
+                st.metric("행정규칙", fact.get('related_admin_rules_count', 0))
+                st.metric("자치법규", fact.get('related_ordinances_count', 0))
+            with cols[1]:
+                st.metric("헌재결정례", fact.get('related_constitutional_cases_count', 0))
+                st.metric("법령해석례", fact.get('related_legal_interpretations_count', 0))
+                st.metric("행정심판례", fact.get('related_admin_rulings_count', 0))
+                st.metric("조약", fact.get('related_treaties_count', 0))
+
+        st.divider()
+
         # API 상태
         st.header("🔌 시스템 상태")
         if LAW_API_KEY:
             st.success("✅ 법제처 API 연결")
         else:
             st.error("❌ 법제처 API 키 필요")
-            
+
         if OPENAI_API_KEY:
-            st.success("✅ AI 엔진 활성화")
+            st.success("✅ GPT-5 AI 엔진 활성화")
         else:
             st.error("❌ OpenAI API 키 필요")
-        
+
         # 새 대화 시작 버튼
         if st.button("🔄 새 상담 시작", use_container_width=True):
             st.session_state.chat_history = []
@@ -714,14 +1044,21 @@ async def main():
             # 웰컴 메시지
             st.markdown("""
             <div class="chat-message assistant-message">
-                <strong>⚖️ AI 변호사:</strong><br>
+                <strong>⚖️ AI 변호사 (GPT-5):</strong><br>
                 안녕하세요, AI 변호사입니다.<br><br>
-                
-                다음과 같은 법률 서비스를 제공해드립니다:<br>
+
+                <b>🔍 검색 가능한 법률 데이터:</b><br>
+                • 법령 (현행법령, 시행일 기준)<br>
+                • 판례 (대법원, 하급심)<br>
+                • 행정규칙, 자치법규 (조례/규칙)<br>
+                • 헌재결정례, 법령해석례<br>
+                • 행정심판례, 조약<br><br>
+
+                <b>📋 제공 서비스:</b><br>
                 • 법률 정보 제공 - "~은 무엇인가요?"<br>
                 • 계약서 검토 - "계약서 검토해주세요"<br>
                 • 법률자문의견서 - "~사안에 대한 법적 검토"<br><br>
-                
+
                 어떤 법률 문제를 도와드릴까요?
             </div>
             """, unsafe_allow_html=True)
