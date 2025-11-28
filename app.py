@@ -583,8 +583,12 @@ class LegalAIEngine:
     
     async def _generate_info_response(self, query: str, legal_data: Dict) -> str:
         """법률 정보 제공 응답 생성"""
+        # API 키 확인
+        if not OPENAI_API_KEY:
+            return self._generate_fallback_response(query, legal_data)
+
         context = self._build_context(legal_data)
-        
+
         prompt = f"""
 {AI_LAWYER_SYSTEM_PROMPT}
 
@@ -634,8 +638,12 @@ class LegalAIEngine:
     
     async def _generate_contract_review(self, query: str, legal_data: Dict) -> str:
         """계약서 검토 응답 생성"""
+        # API 키 확인
+        if not OPENAI_API_KEY:
+            return self._generate_fallback_response(query, legal_data)
+
         context = self._build_context(legal_data)
-        
+
         prompt = f"""
 {AI_LAWYER_SYSTEM_PROMPT}
 
@@ -690,9 +698,13 @@ class LegalAIEngine:
             logger.error(f"계약서 검토 오류: {e}")
             return "계약서 검토를 생성할 수 없습니다."
     
-    async def _generate_legal_opinion(self, query: str, legal_data: Dict, 
+    async def _generate_legal_opinion(self, query: str, legal_data: Dict,
                                     fact_sheet: Dict) -> str:
         """법률자문의견서 생성"""
+        # API 키 확인
+        if not OPENAI_API_KEY:
+            return self._generate_fallback_response(query, legal_data)
+
         context = self._build_context(legal_data)
         timeline = "\n".join([f"- {item['date']}: {item['event']}" 
                              for item in fact_sheet['timeline']])
@@ -866,6 +878,49 @@ AI 변호사 GPT (전자서명)
             context_parts.append(treaty_text)
 
         return "\n".join(context_parts)
+
+    def _generate_fallback_response(self, query: str, legal_data: Dict) -> str:
+        """API 키 없을 때 검색 결과 기반 기본 응답 생성"""
+        context = self._build_context(legal_data)
+
+        # 검색 결과 통계
+        stats = []
+        if legal_data.get('laws'):
+            stats.append(f"법령 {len(legal_data['laws'])}건")
+        if legal_data.get('precedents'):
+            stats.append(f"판례 {len(legal_data['precedents'])}건")
+        if legal_data.get('admin_rules'):
+            stats.append(f"행정규칙 {len(legal_data['admin_rules'])}건")
+        if legal_data.get('ordinances'):
+            stats.append(f"자치법규 {len(legal_data['ordinances'])}건")
+        if legal_data.get('constitutional_cases'):
+            stats.append(f"헌재결정례 {len(legal_data['constitutional_cases'])}건")
+        if legal_data.get('legal_interpretations'):
+            stats.append(f"법령해석례 {len(legal_data['legal_interpretations'])}건")
+        if legal_data.get('admin_rulings'):
+            stats.append(f"행정심판례 {len(legal_data['admin_rulings'])}건")
+        if legal_data.get('treaties'):
+            stats.append(f"조약 {len(legal_data['treaties'])}건")
+
+        stats_text = ", ".join(stats) if stats else "검색 결과 없음"
+
+        response = f"""## 법률 데이터 검색 결과
+
+**질의:** {query}
+
+**검색 통계:** {stats_text}
+
+{context if context else "관련 법률 데이터를 찾지 못했습니다."}
+
+---
+⚠️ **안내:** OpenAI API 키가 설정되지 않아 AI 분석 기능을 사용할 수 없습니다.
+위 검색 결과는 법제처 Open API에서 가져온 원본 데이터입니다.
+
+AI 분석을 이용하시려면 `.env` 파일에 `OPENAI_API_KEY`를 설정해주세요.
+
+⚖️ 본 내용은 참고자료이며, 구체적인 사안에 대해서는 반드시 변호사 등 전문가의 검토가 필요합니다.
+"""
+        return response
 
 # ===== Streamlit UI 함수들 =====
 def display_chat_message(role: str, content: str):
@@ -1123,22 +1178,25 @@ async def main():
 
 # ===== 앱 실행 =====
 if __name__ == "__main__":
-    # API 키 확인
+    # API 키 상태를 세션에 저장
+    if 'api_warning_shown' not in st.session_state:
+        st.session_state.api_warning_shown = False
+
+    # API 키 경고 표시 (앱은 계속 실행)
     if not LAW_API_KEY:
-        st.error("⚠️ 법제처 API 키가 설정되지 않았습니다!")
-        st.info("""
-        ### 설정 방법:
-        1. [법제처 Open API](https://open.law.go.kr)에서 API 키 발급
-        2. `.env` 파일 생성 후 다음 내용 추가:
-        ```
-        LAW_API_KEY=발급받은_API_키
-        OPENAI_API_KEY=OpenAI_API_키
-        ```
-        """)
-        st.stop()
-    
+        st.warning("⚠️ 법제처 API 키가 설정되지 않았습니다. 법률 데이터 검색 기능이 제한됩니다.")
+        with st.expander("🔧 API 키 설정 방법", expanded=False):
+            st.markdown("""
+            1. [법제처 Open API](https://open.law.go.kr)에서 API 키 발급
+            2. `.env` 파일 생성 후 다음 내용 추가:
+            ```
+            LAW_API_KEY=발급받은_API_키
+            OPENAI_API_KEY=OpenAI_API_키
+            ```
+            """)
+
     if not OPENAI_API_KEY:
         st.warning("⚠️ OpenAI API 키가 없어 AI 분석 기능이 제한됩니다.")
-    
-    # 비동기 실행
+
+    # 비동기 실행 (API 키 유무와 관계없이 앱 실행)
     asyncio.run(main())
