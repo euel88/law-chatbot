@@ -961,9 +961,10 @@ def display_chat_message(role: str, content: str):
 
 def display_legal_opinion(content: str):
     """법률자문의견서 형식으로 표시"""
+    formatted_content = content.replace("\n", "<br>")
     st.markdown(f'''
     <div class="legal-opinion">
-        {content.replace("\n", "<br>")}
+        {formatted_content}
     </div>
     ''', unsafe_allow_html=True)
 
