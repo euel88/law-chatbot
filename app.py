@@ -23,7 +23,7 @@ import nest_asyncio
 import aiohttp
 import pandas as pd
 from dotenv import load_dotenv
-import openai
+from openai import OpenAI
 import logging
 from enum import Enum
 import re
@@ -57,8 +57,8 @@ def get_api_key(key_name: str, default: str = '') -> str:
 LAW_API_KEY = get_api_key('LAW_API_KEY')
 OPENAI_API_KEY = get_api_key('OPENAI_API_KEY')
 
-# OpenAI 설정
-openai.api_key = OPENAI_API_KEY
+# OpenAI 클라이언트 초기화
+openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -645,7 +645,7 @@ class LegalAIEngine:
 """
 
         try:
-            response = openai.ChatCompletion.create(
+            response = openai_client.chat.completions.create(
                 model="gpt-5",
                 messages=[
                     {"role": "system", "content": AI_LAWYER_SYSTEM_PROMPT},
@@ -707,7 +707,7 @@ class LegalAIEngine:
 """
 
         try:
-            response = openai.ChatCompletion.create(
+            response = openai_client.chat.completions.create(
                 model="gpt-5",
                 messages=[
                     {"role": "system", "content": AI_LAWYER_SYSTEM_PROMPT},
@@ -810,7 +810,7 @@ AI 변호사 GPT (전자서명)
 """
 
         try:
-            response = openai.ChatCompletion.create(
+            response = openai_client.chat.completions.create(
                 model="gpt-5",
                 messages=[
                     {"role": "system", "content": AI_LAWYER_SYSTEM_PROMPT},
@@ -1030,7 +1030,7 @@ async def main():
     with col2:
         st.markdown("""
         <div style="text-align: right; padding: 1rem;">
-            <small>v5.0 | GPT-5 + 법제처 API 전체 연동</small>
+            <small>v5.0 | GPT-4 + 법제처 API 전체 연동</small>
         </div>
         """, unsafe_allow_html=True)
     
@@ -1103,7 +1103,7 @@ async def main():
             st.error("❌ 법제처 API 키 필요")
 
         if OPENAI_API_KEY:
-            st.success("✅ GPT-5 AI 엔진 활성화")
+            st.success("✅ GPT-4 AI 엔진 활성화")
         else:
             st.error("❌ OpenAI API 키 필요")
 
@@ -1123,7 +1123,7 @@ async def main():
             # 웰컴 메시지
             st.markdown("""
             <div class="chat-message assistant-message">
-                <strong>⚖️ AI 변호사 (GPT-5):</strong><br>
+                <strong>⚖️ AI 변호사 (GPT-4):</strong><br>
                 안녕하세요, AI 변호사입니다.<br><br>
 
                 <b>🔍 검색 가능한 법률 데이터:</b><br>
