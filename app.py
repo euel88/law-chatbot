@@ -30,9 +30,28 @@ import re
 # 환경변수 로드
 load_dotenv()
 
+
+# ===== API 키 로드 함수 =====
+def get_api_key(key_name: str, default: str = '') -> str:
+    """
+    API 키를 여러 소스에서 로드 (우선순위: st.secrets > 환경변수)
+    - Streamlit Cloud: st.secrets에서 로드
+    - 로컬/GitHub Actions: 환경변수에서 로드
+    """
+    # 1. Streamlit secrets 확인 (Streamlit Cloud)
+    try:
+        if hasattr(st, 'secrets') and key_name in st.secrets:
+            return st.secrets[key_name]
+    except Exception:
+        pass
+
+    # 2. 환경변수 확인 (로컬 .env 또는 GitHub Actions)
+    return os.getenv(key_name, default)
+
+
 # ===== 설정 =====
-LAW_API_KEY = os.getenv('LAW_API_KEY', '')
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
+LAW_API_KEY = get_api_key('LAW_API_KEY')
+OPENAI_API_KEY = get_api_key('OPENAI_API_KEY')
 
 # OpenAI 설정
 openai.api_key = OPENAI_API_KEY
