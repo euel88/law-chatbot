@@ -1193,7 +1193,7 @@ if __name__ == "__main__":
         st.warning(f"⚠️ {', '.join(missing_keys)} 키가 설정되지 않았습니다.")
 
         with st.expander("🔧 API 키 설정 방법", expanded=True):
-            tab1, tab2 = st.tabs(["💻 로컬 환경", "☁️ Streamlit Cloud"])
+            tab1, tab2, tab3 = st.tabs(["💻 로컬 환경", "☁️ Streamlit Cloud", "🔐 GitHub Actions"])
 
             with tab1:
                 st.markdown("#### Step 1: API 키 발급")
@@ -1227,6 +1227,28 @@ OPENAI_API_KEY=여기에_OpenAI_API_키_입력""", language="bash")
                 """)
                 st.code("""LAW_API_KEY = "여기에_법제처_API_키_입력"
 OPENAI_API_KEY = "여기에_OpenAI_API_키_입력" """, language="toml")
+
+            with tab3:
+                st.markdown("#### GitHub Actions Secrets 설정")
+                st.markdown("""
+                1. GitHub 저장소 페이지 접속
+                2. **Settings** → **Secrets and variables** → **Actions** 클릭
+                3. **New repository secret** 버튼 클릭
+                4. 아래 두 개의 Secret 추가:
+                """)
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.code("Name: LAW_API_KEY\nSecret: 법제처_API_키", language="yaml")
+                with col2:
+                    st.code("Name: OPENAI_API_KEY\nSecret: OpenAI_API_키", language="yaml")
+
+                st.markdown("#### Workflow 파일에서 사용")
+                st.code("""# .github/workflows/deploy.yml
+env:
+  LAW_API_KEY: ${{ secrets.LAW_API_KEY }}
+  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}""", language="yaml")
+                st.caption("GitHub Actions workflow에서 secrets를 환경변수로 전달합니다.")
 
         st.divider()
 
