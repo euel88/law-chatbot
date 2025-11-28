@@ -652,7 +652,7 @@ class LegalAIEngine:
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.3,
-                max_tokens=2000
+                max_completion_tokens=2000
             )
             return response.choices[0].message.content
         except Exception as e:
@@ -714,7 +714,7 @@ class LegalAIEngine:
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.3,
-                max_tokens=2500
+                max_completion_tokens=2500
             )
             return response.choices[0].message.content
         except Exception as e:
@@ -817,7 +817,7 @@ AI 변호사 GPT (전자서명)
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.2,  # 더 정확한 응답을 위해 낮은 temperature
-                max_tokens=3500
+                max_completion_tokens=3500
             )
             return response.choices[0].message.content
         except Exception as e:
@@ -1030,7 +1030,7 @@ async def main():
     with col2:
         st.markdown("""
         <div style="text-align: right; padding: 1rem;">
-            <small>v5.0 | GPT-4 + 법제처 API 전체 연동</small>
+            <small>v5.0 | GPT-5 + 법제처 API 전체 연동</small>
         </div>
         """, unsafe_allow_html=True)
     
@@ -1103,7 +1103,7 @@ async def main():
             st.error("❌ 법제처 API 키 필요")
 
         if OPENAI_API_KEY:
-            st.success("✅ GPT-4 AI 엔진 활성화")
+            st.success("✅ GPT-5 AI 엔진 활성화")
         else:
             st.error("❌ OpenAI API 키 필요")
 
@@ -1123,7 +1123,7 @@ async def main():
             # 웰컴 메시지
             st.markdown("""
             <div class="chat-message assistant-message">
-                <strong>⚖️ AI 변호사 (GPT-4):</strong><br>
+                <strong>⚖️ AI 변호사 (GPT-5):</strong><br>
                 안녕하세요, AI 변호사입니다.<br><br>
 
                 <b>🔍 검색 가능한 법률 데이터:</b><br>
