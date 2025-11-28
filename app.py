@@ -19,6 +19,7 @@ import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 import asyncio
+import nest_asyncio
 import aiohttp
 import pandas as pd
 from dotenv import load_dotenv
@@ -26,6 +27,9 @@ import openai
 import logging
 from enum import Enum
 import re
+
+# Streamlit 환경에서 asyncio 이벤트 루프 충돌 방지
+nest_asyncio.apply()
 
 # 환경변수 로드
 load_dotenv()
