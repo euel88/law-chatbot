@@ -1183,20 +1183,52 @@ if __name__ == "__main__":
         st.session_state.api_warning_shown = False
 
     # API 키 경고 표시 (앱은 계속 실행)
+    missing_keys = []
     if not LAW_API_KEY:
-        st.warning("⚠️ 법제처 API 키가 설정되지 않았습니다. 법률 데이터 검색 기능이 제한됩니다.")
-        with st.expander("🔧 API 키 설정 방법", expanded=False):
-            st.markdown("""
-            1. [법제처 Open API](https://open.law.go.kr)에서 API 키 발급
-            2. `.env` 파일 생성 후 다음 내용 추가:
-            ```
-            LAW_API_KEY=발급받은_API_키
-            OPENAI_API_KEY=OpenAI_API_키
-            ```
-            """)
-
+        missing_keys.append("법제처 API")
     if not OPENAI_API_KEY:
-        st.warning("⚠️ OpenAI API 키가 없어 AI 분석 기능이 제한됩니다.")
+        missing_keys.append("OpenAI API")
+
+    if missing_keys:
+        st.warning(f"⚠️ {', '.join(missing_keys)} 키가 설정되지 않았습니다.")
+
+        with st.expander("🔧 API 키 설정 방법", expanded=True):
+            tab1, tab2 = st.tabs(["💻 로컬 환경", "☁️ Streamlit Cloud"])
+
+            with tab1:
+                st.markdown("#### Step 1: API 키 발급")
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.info("**법제처 Open API**")
+                    st.markdown("""
+                    1. [open.law.go.kr](https://open.law.go.kr) 접속
+                    2. 회원가입 후 로그인
+                    3. API 키 발급 신청
+                    """)
+                with col2:
+                    st.info("**OpenAI API**")
+                    st.markdown("""
+                    1. [platform.openai.com](https://platform.openai.com) 접속
+                    2. 계정 생성 후 로그인
+                    3. API Keys 메뉴에서 키 생성
+                    """)
+
+                st.markdown("#### Step 2: `.env` 파일 생성")
+                st.code("""LAW_API_KEY=여기에_법제처_API_키_입력
+OPENAI_API_KEY=여기에_OpenAI_API_키_입력""", language="bash")
+                st.caption("프로젝트 루트 폴더에 `.env` 파일을 생성하세요.")
+
+            with tab2:
+                st.markdown("#### Streamlit Cloud Secrets 설정")
+                st.markdown("""
+                1. Streamlit Cloud 앱 대시보드 접속
+                2. **Settings** → **Secrets** 메뉴 클릭
+                3. 아래 내용 입력 후 저장:
+                """)
+                st.code("""LAW_API_KEY = "여기에_법제처_API_키_입력"
+OPENAI_API_KEY = "여기에_OpenAI_API_키_입력" """, language="toml")
+
+        st.divider()
 
     # 비동기 실행 (API 키 유무와 관계없이 앱 실행)
     asyncio.run(main())
