@@ -23,7 +23,7 @@ import nest_asyncio
 import aiohttp
 import pandas as pd
 from dotenv import load_dotenv
-import openai
+from openai import OpenAI
 import logging
 from enum import Enum
 import re
@@ -57,8 +57,8 @@ def get_api_key(key_name: str, default: str = '') -> str:
 LAW_API_KEY = get_api_key('LAW_API_KEY')
 OPENAI_API_KEY = get_api_key('OPENAI_API_KEY')
 
-# OpenAI 설정
-openai.api_key = OPENAI_API_KEY
+# OpenAI 클라이언트 초기화
+openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -645,8 +645,8 @@ class LegalAIEngine:
 """
 
         try:
-            response = openai.ChatCompletion.create(
-                model="gpt-4",
+            response = openai_client.chat.completions.create(
+                model="gpt-5",
                 messages=[
                     {"role": "system", "content": AI_LAWYER_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
@@ -707,8 +707,8 @@ class LegalAIEngine:
 """
 
         try:
-            response = openai.ChatCompletion.create(
-                model="gpt-4",
+            response = openai_client.chat.completions.create(
+                model="gpt-5",
                 messages=[
                     {"role": "system", "content": AI_LAWYER_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
@@ -810,8 +810,8 @@ AI 변호사 GPT (전자서명)
 """
 
         try:
-            response = openai.ChatCompletion.create(
-                model="gpt-4",
+            response = openai_client.chat.completions.create(
+                model="gpt-5",
                 messages=[
                     {"role": "system", "content": AI_LAWYER_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
