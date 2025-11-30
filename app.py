@@ -896,12 +896,25 @@ AI 분석을 이용하시려면 사이드바에서 OpenAI API 키를 입력해�
 ⚖️ 본 내용은 참고자료이며, 구체적인 사안에 대해서는 반드시 변호사 등 전문가의 검토가 필요합니다.
 """
 
-    async def generate_legal_advice(self, query: str, legal_data: Dict,
-                                   fact_sheet: Dict, service_type: ServiceType = None) -> str:
-        """AI 법률 조언 생성 - 실제 검색 결과 기반"""
-        openai_client = get_openai_client()
-
-        if not openai_client:
+        try:
+            response = openai_client.chat.completions.create(
+                model="gpt-5",
+                messages=[
+                    {"role": "system", "content": AI_LAWYER_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,
+                max_completion_tokens=2000
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            logger.error(f"AI 응답 생성 오류: {e}")
+            return "AI 응답을 생성할 수 없습니다. API 키를 확인해주세요."
+    
+    async def _generate_contract_review(self, query: str, legal_data: Dict) -> str:
+        """계약서 검토 응답 생성"""
+        # API 키 확인
+        if not OPENAI_API_KEY:
             return self._generate_fallback_response(query, legal_data)
 
         context = self._build_context(legal_data)
@@ -1003,7 +1016,7 @@ AI 분석을 이용하시려면 사이드바에서 OpenAI API 키를 입력해�
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.3,
-                max_tokens=4000  # 더 긴 응답 허용
+                max_completion_tokens=2500
             )
             return response.choices[0].message.content
         except Exception as e:
@@ -1286,10 +1299,14 @@ def render_pdf_translation_tab():
         uploaded_file.seek(0)  # 파일 포인터 리셋
 
         try:
-            translator = PDFTranslator(
-                openai_client=get_openai_client(),
-                source_lang=source_lang,
-                target_lang=target_lang
+            response = openai_client.chat.completions.create(
+                model="gpt-5",
+                messages=[
+                    {"role": "system", "content": AI_LAWYER_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.2,  # 더 정확한 응답을 위해 낮은 temperature
+                max_completion_tokens=3500
             )
             pdf_info = translator.get_pdf_info(pdf_bytes)
 
@@ -1379,7 +1396,7 @@ def main():
     with col2:
         st.markdown("""
         <div style="text-align: right; padding: 1rem;">
-            <small>v7.0 | PDF 번역 기능 추가</small>
+            <small>v5.0 | GPT-5 + 법제처 API 전체 연동</small>
         </div>
         """, unsafe_allow_html=True)
 
@@ -1429,8 +1446,8 @@ def main():
             st.error("❌ 법제처 API 키 필요")
             st.caption("검색 기능을 사용하려면 법제처 API 키가 필요합니다.")
 
-        if openai_key:
-            st.success("✅ OpenAI API 연결됨")
+        if OPENAI_API_KEY:
+            st.success("✅ GPT-5 AI 엔진 활성화")
         else:
             st.warning("⚠️ OpenAI API 미설정")
             st.caption("AI 분석 없이 검색 결과만 표시됩니다.")
@@ -1509,9 +1526,8 @@ def main():
         if not st.session_state.chat_history:
             st.markdown("""
             <div class="chat-message assistant-message">
-                <strong>⚖️ AI 법률 연구 도우미:</strong><br><br>
-
-                안녕하세요! AI 법률 연구 도우미입니다.<br><br>
+                <strong>⚖️ AI 변호사 (GPT-5):</strong><br>
+                안녕하세요, AI 변호사입니다.<br><br>
 
                 <b>🔍 검색 가능한 법률 데이터:</b><br>
                 • <b>기본:</b> 법령, 판례, 행정규칙, 자치법규, 헌재결정례, 법령해석례, 행정심판례, 조약<br>
