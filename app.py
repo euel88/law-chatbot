@@ -1446,7 +1446,7 @@ def main():
             st.error("❌ 법제처 API 키 필요")
             st.caption("검색 기능을 사용하려면 법제처 API 키가 필요합니다.")
 
-        if OPENAI_API_KEY:
+        if openai_key:
             st.success("✅ GPT-5 AI 엔진 활성화")
         else:
             st.warning("⚠️ OpenAI API 미설정")
