@@ -897,7 +897,10 @@ AI 분석을 이용하시려면 사이드바에서 OpenAI API 키를 입력해�
 """
 
         try:
-            response = openai_client.chat.completions.create(
+            client = get_openai_client()
+            if not client:
+                return "AI 응답을 생성할 수 없습니다. OpenAI API 키를 확인해주세요."
+            response = client.chat.completions.create(
                 model="gpt-5",
                 messages=[
                     {"role": "system", "content": AI_LAWYER_SYSTEM_PROMPT},
@@ -910,11 +913,11 @@ AI 분석을 이용하시려면 사이드바에서 OpenAI API 키를 입력해�
         except Exception as e:
             logger.error(f"AI 응답 생성 오류: {e}")
             return "AI 응답을 생성할 수 없습니다. API 키를 확인해주세요."
-    
+
     async def _generate_contract_review(self, query: str, legal_data: Dict) -> str:
         """계약서 검토 응답 생성"""
         # API 키 확인
-        if not OPENAI_API_KEY:
+        if not get_openai_api_key():
             return self._generate_fallback_response(query, legal_data)
 
         context = self._build_context(legal_data)
@@ -1009,7 +1012,10 @@ AI 분석을 이용하시려면 사이드바에서 OpenAI API 키를 입력해�
 """
 
         try:
-            response = openai_client.chat.completions.create(
+            client = get_openai_client()
+            if not client:
+                return self._generate_fallback_response(query, legal_data)
+            response = client.chat.completions.create(
                 model="gpt-5",
                 messages=[
                     {"role": "system", "content": AI_LAWYER_SYSTEM_PROMPT},
@@ -1299,16 +1305,12 @@ def render_pdf_translation_tab():
         uploaded_file.seek(0)  # 파일 포인터 리셋
 
         try:
-            response = openai_client.chat.completions.create(
-                model="gpt-5",
-                messages=[
-                    {"role": "system", "content": AI_LAWYER_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.2,  # 더 정확한 응답을 위해 낮은 temperature
-                max_completion_tokens=3500
-            )
-            pdf_info = translator.get_pdf_info(pdf_bytes)
+            translator = PDFTranslator(get_openai_client()) if PDF_TRANSLATOR_AVAILABLE else None
+            if translator:
+                pdf_info = translator.get_pdf_info(pdf_bytes)
+            else:
+                st.error("PDF 번역기를 초기화할 수 없습니다.")
+                return
 
             col1, col2, col3 = st.columns(3)
             with col1:
