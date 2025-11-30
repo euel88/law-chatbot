@@ -378,44 +378,51 @@ class LegalAIEngine:
 
     def analyze_query_with_ai(self, user_input: str) -> Dict:
         """AI를 사용하여 사용자 질의 의도 파악 및 검색 키워드 생성"""
+        # 기본 키워드 먼저 추출 (fallback용)
+        basic_keywords = self.extract_keywords(user_input)
+        default_result = {
+            'intent': '법률 정보 검색',
+            'law_names': [],
+            'keywords': basic_keywords,
+            'search_queries': basic_keywords[:3] if basic_keywords else [user_input]
+        }
+
         client = get_openai_client()
         if not client:
-            # AI 없이 기본 키워드 추출
-            return {
-                'intent': '법률 정보 검색',
-                'keywords': self.extract_keywords(user_input),
-                'search_queries': [user_input]
-            }
+            logger.info("OpenAI 클라이언트 없음 - 기본 키워드 사용")
+            return default_result
 
         try:
-            prompt = f"""사용자의 법률 질문을 분석하여 다음을 JSON 형식으로 응답해주세요:
+            prompt = f"""사용자의 법률 질문을 분석하여 JSON 형식으로만 응답해주세요.
 
 사용자 질문: {user_input}
 
-응답 형식:
+아래 형식으로만 응답하세요 (다른 설명 없이 JSON만):
 {{
-    "intent": "질문의 핵심 의도 (예: 법령 조회, 판례 검색, 요건 확인 등)",
-    "law_names": ["관련 법률명 목록 (예: 대부업법, 민법 등)"],
-    "keywords": ["핵심 검색 키워드 5개 이내"],
-    "search_queries": ["법제처 API 검색에 사용할 구체적인 검색어 3개 이내"]
+    "intent": "질문의 핵심 의도",
+    "law_names": ["관련 법률명"],
+    "keywords": ["핵심 키워드 5개 이내"],
+    "search_queries": ["법제처 검색어 3개"]
 }}
 
-참고사항:
-- search_queries는 법제처 Open API 검색에 최적화된 간결한 검색어여야 합니다
-- 법률명이 있으면 반드시 포함하세요
-- 복합 키워드보다 핵심 단어 조합을 사용하세요
-- 예: "대부업법 자기자본", "매입채권추심업 등록요건" 등"""
+규칙:
+1. search_queries는 법제처 API 검색용 간결한 검색어
+2. 법률명(XX법)이 있으면 반드시 search_queries에 포함
+3. 예: "대부업법 자기자본", "근로기준법 해고"
+"""
 
             response = client.chat.completions.create(
-                model="gpt-5",
+                model="gpt-4o",
                 messages=[
-                    {"role": "system", "content": "당신은 한국 법률 전문가입니다. 사용자의 법률 질문을 분석하여 적절한 검색 키워드를 생성합니다."},
+                    {"role": "system", "content": "당신은 한국 법률 검색 전문가입니다. JSON 형식으로만 응답합니다."},
                     {"role": "user", "content": prompt}
                 ],
-                max_completion_tokens=500
+                max_tokens=500
             )
 
-            result_text = response.choices[0].message.content
+            result_text = response.choices[0].message.content.strip()
+            logger.info(f"AI 원본 응답: {result_text[:200]}")
+
             # JSON 파싱 시도
             try:
                 # JSON 블록 추출
@@ -423,27 +430,35 @@ class LegalAIEngine:
                     json_str = result_text.split('```json')[1].split('```')[0].strip()
                 elif '```' in result_text:
                     json_str = result_text.split('```')[1].split('```')[0].strip()
+                elif result_text.startswith('{'):
+                    json_str = result_text
                 else:
-                    json_str = result_text.strip()
+                    # JSON 시작 위치 찾기
+                    start_idx = result_text.find('{')
+                    end_idx = result_text.rfind('}') + 1
+                    if start_idx >= 0 and end_idx > start_idx:
+                        json_str = result_text[start_idx:end_idx]
+                    else:
+                        raise ValueError("JSON 형식을 찾을 수 없음")
 
                 result = json.loads(json_str)
+
+                # 필수 필드 확인 및 보정
+                if 'search_queries' not in result or not result['search_queries']:
+                    result['search_queries'] = result.get('keywords', basic_keywords)[:3]
+                if 'keywords' not in result or not result['keywords']:
+                    result['keywords'] = basic_keywords
+
                 logger.info(f"AI 의도 분석 결과: {result}")
                 return result
-            except json.JSONDecodeError:
-                logger.warning(f"AI 응답 JSON 파싱 실패: {result_text}")
-                return {
-                    'intent': '법률 정보 검색',
-                    'keywords': self.extract_keywords(user_input),
-                    'search_queries': [user_input]
-                }
+
+            except (json.JSONDecodeError, ValueError) as e:
+                logger.warning(f"AI 응답 JSON 파싱 실패: {e}, 응답: {result_text[:200]}")
+                return default_result
 
         except Exception as e:
             logger.error(f"AI 의도 분석 오류: {e}")
-            return {
-                'intent': '법률 정보 검색',
-                'keywords': self.extract_keywords(user_input),
-                'search_queries': [user_input]
-            }
+            return default_result
 
     async def _search_by_target(self, session, query: str, target: str,
                                 display: int = 10) -> List[Dict]:
@@ -1174,7 +1189,7 @@ AI 분석을 이용하시려면 사이드바에서 OpenAI API 키를 입력해�
             if not client:
                 return "AI 응답을 생성할 수 없습니다. OpenAI API 키를 확인해주세요."
             response = client.chat.completions.create(
-                model="gpt-5",
+                model="gpt-4o",
                 messages=[
                     {"role": "system", "content": AI_LAWYER_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
@@ -1288,7 +1303,7 @@ AI 분석을 이용하시려면 사이드바에서 OpenAI API 키를 입력해�
             if not client:
                 return self._generate_fallback_response(query, legal_data)
             response = client.chat.completions.create(
-                model="gpt-5",
+                model="gpt-4o",
                 messages=[
                     {"role": "system", "content": AI_LAWYER_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
@@ -1402,7 +1417,7 @@ AI 분석을 이용하시려면 사이드바에서 OpenAI API 키를 입력해�
             if not client:
                 return self._generate_fallback_response(query, legal_data)
             response = client.chat.completions.create(
-                model="gpt-5",
+                model="gpt-4o",
                 messages=[
                     {"role": "system", "content": AI_LAWYER_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
