@@ -922,53 +922,49 @@ def main():
         # 검색 옵션
         st.header("🔍 검색 옵션")
 
+        # 엔진 초기화 (옵션 표시용)
+        engine = LegalAIEngine()
+
         # 기본 데이터 검색
         search_basic = st.checkbox("기본 법률 데이터", value=True,
                                    help="법령, 판례, 행정규칙, 자치법규, 헌재결정례, 법령해석례, 행정심판례, 조약")
 
         # 위원회 결정문
         with st.expander("위원회 결정문"):
-            engine = LegalAIEngine()
-            selected_committees = []
-
             col1, col2 = st.columns(2)
             committees_list = list(engine.committee_targets.items())
             half = len(committees_list) // 2
 
             with col1:
                 for key, info in committees_list[:half]:
-                    if st.checkbox(info['name'], key=f"comm_{key}"):
-                        selected_committees.append(key)
+                    st.checkbox(info['name'], key=f"comm_{key}")
             with col2:
                 for key, info in committees_list[half:]:
-                    if st.checkbox(info['name'], key=f"comm_{key}"):
-                        selected_committees.append(key)
+                    st.checkbox(info['name'], key=f"comm_{key}")
 
-        # 부처별 법령해석
-        with st.expander("부처별 법령해석"):
-            selected_ministries = []
+        # 부처별 법령해석 (주요)
+        major_ministries = [
+            ('moelCgmExpc', '고용노동부'),
+            ('molitCgmExpc', '국토교통부'),
+            ('moisCgmExpc', '행정안전부'),
+            ('mohwCgmExpc', '보건복지부'),
+            ('molegCgmExpc', '법제처'),
+            ('mojCgmExpc', '법무부'),
+        ]
 
-            # 주요 부처
-            st.markdown("**주요 부처**")
-            major_ministries = [
-                ('moelCgmExpc', '고용노동부'),
-                ('molitCgmExpc', '국토교통부'),
-                ('moisCgmExpc', '행정안전부'),
-                ('mohwCgmExpc', '보건복지부'),
-                ('molegCgmExpc', '법제처'),
-                ('mojCgmExpc', '법무부'),
-            ]
+        with st.expander("부처별 법령해석 (주요)"):
             for key, name in major_ministries:
-                if st.checkbox(name, key=f"min_{key}"):
-                    selected_ministries.append(key)
+                st.checkbox(name, key=f"min_{key}")
 
-            # 기타 부처
-            with st.expander("기타 부처"):
-                other_ministries = [(k, v['name']) for k, v in engine.ministry_targets.items()
-                                   if k not in [m[0] for m in major_ministries]]
-                for key, name in other_ministries:
-                    if st.checkbox(name, key=f"min_{key}"):
-                        selected_ministries.append(key)
+        # 부처별 법령해석 (기타)
+        other_ministries = [(k, v['name']) for k, v in engine.ministry_targets.items()
+                           if k not in [m[0] for m in major_ministries]]
+
+        with st.expander("부처별 법령해석 (기타)"):
+            col1, col2 = st.columns(2)
+            for idx, (key, name) in enumerate(other_ministries):
+                with col1 if idx % 2 == 0 else col2:
+                    st.checkbox(name, key=f"min_{key}")
 
         # 특별행정심판례
         search_special_tribunals = st.checkbox(
@@ -1065,6 +1061,19 @@ def main():
         elif not get_law_api_key():
             st.error("법제처 API 키를 입력해주세요.")
         else:
+            # 세션 상태에서 선택된 위원회 수집
+            engine_for_options = LegalAIEngine()
+            selected_committees = [
+                key for key in engine_for_options.committee_targets.keys()
+                if st.session_state.get(f"comm_{key}", False)
+            ]
+
+            # 세션 상태에서 선택된 부처 수집
+            selected_ministries = [
+                key for key in engine_for_options.ministry_targets.keys()
+                if st.session_state.get(f"min_{key}", False)
+            ]
+
             # 검색 옵션 구성
             search_options = {
                 'basic': search_basic,
