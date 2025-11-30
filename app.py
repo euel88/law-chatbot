@@ -415,6 +415,11 @@ class LegalAIEngine:
                                         break
 
                         logger.info(f"[{target}] 검색 결과: {len(results)}건 (쿼리: {query})")
+                        # 디버깅: 첫 번째 결과의 구조 출력
+                        if results and len(results) > 0:
+                            first_item = results[0]
+                            logger.info(f"[{target}] 첫 번째 결과 키: {list(first_item.keys()) if isinstance(first_item, dict) else type(first_item)}")
+                            logger.info(f"[{target}] 첫 번째 결과 내용: {str(first_item)[:500]}")
                         return results
 
                     except json.JSONDecodeError as e:
@@ -690,6 +695,19 @@ class LegalAIEngine:
 
         return sorted(timeline, key=lambda x: x['date'])
 
+    def _get_value(self, item: Dict, *keys, default='') -> str:
+        """여러 가능한 키에서 값을 찾는 헬퍼 함수"""
+        if not isinstance(item, dict):
+            return default
+        for key in keys:
+            if key in item and item[key]:
+                return str(item[key])
+        # 키가 없으면 모든 값 중 문자열인 것 반환 시도
+        for key, value in item.items():
+            if isinstance(value, str) and value and key not in ['target', 'type', 'id']:
+                return value
+        return default
+
     def _build_context(self, legal_data: Dict) -> str:
         """검색 결과를 컨텍스트로 구성 - 판례/유권해석 중심 확장"""
         context_parts = []
@@ -704,98 +722,104 @@ class LegalAIEngine:
                 if laws:
                     context_parts.append(f"\n[관련 법령] (총 {len(laws)}건)")
                     for idx, law in enumerate(laws[:15], 1):
-                        name = law.get('법령명한글', law.get('법령명', ''))
-                        dept = law.get('소관부처명', '')
-                        date = law.get('시행일자', law.get('공포일자', ''))
-                        context_parts.append(f"{idx}. {name}")
-                        if dept:
-                            context_parts.append(f"   - 소관부처: {dept}")
-                        if date:
-                            context_parts.append(f"   - 시행/공포일: {date}")
+                        name = self._get_value(law, '법령명한글', '법령명', 'lawNameKorean', 'lawName', '법령명약칭')
+                        dept = self._get_value(law, '소관부처명', '소관부처', 'competentDept')
+                        date = self._get_value(law, '시행일자', '공포일자', 'enforcementDate', 'promulgationDate')
+                        if name:
+                            context_parts.append(f"{idx}. {name}")
+                            if dept:
+                                context_parts.append(f"   - 소관부처: {dept}")
+                            if date:
+                                context_parts.append(f"   - 시행/공포일: {date}")
 
             # 판례 (상위 30개 - 핵심 자료)
             if basic.get('prec'):
                 precs = basic['prec']
                 context_parts.append(f"\n[관련 판례] (총 {len(precs)}건) ★ 핵심 자료")
                 for idx, prec in enumerate(precs[:30], 1):
-                    name = prec.get('사건명', '')
-                    date = prec.get('선고일자', '')
-                    court = prec.get('법원명', '')
-                    case_no = prec.get('사건번호', '')
-                    context_parts.append(f"{idx}. {name}")
-                    if case_no:
-                        context_parts.append(f"   - 사건번호: {case_no}")
-                    if court:
-                        context_parts.append(f"   - 법원: {court}")
-                    if date:
-                        context_parts.append(f"   - 선고일: {date}")
+                    name = self._get_value(prec, '사건명', '판례명', 'caseName', 'caseNm', '제목')
+                    date = self._get_value(prec, '선고일자', '판결일자', 'judgmentDate', 'decisionDate')
+                    court = self._get_value(prec, '법원명', '법원', 'courtName', 'court')
+                    case_no = self._get_value(prec, '사건번호', 'caseNo', 'caseNumber')
+                    if name or case_no:
+                        context_parts.append(f"{idx}. {name or '(사건명 없음)'}")
+                        if case_no:
+                            context_parts.append(f"   - 사건번호: {case_no}")
+                        if court:
+                            context_parts.append(f"   - 법원: {court}")
+                        if date:
+                            context_parts.append(f"   - 선고일: {date}")
 
             # 헌재결정례 (상위 15개)
             if basic.get('detc'):
                 detcs = basic['detc']
                 context_parts.append(f"\n[헌재결정례] (총 {len(detcs)}건)")
                 for idx, case in enumerate(detcs[:15], 1):
-                    name = case.get('사건명', '')
-                    date = case.get('종국일자', case.get('선고일자', ''))
-                    case_no = case.get('사건번호', '')
-                    context_parts.append(f"{idx}. {name}")
-                    if case_no:
-                        context_parts.append(f"   - 사건번호: {case_no}")
-                    if date:
-                        context_parts.append(f"   - 종국일: {date}")
+                    name = self._get_value(case, '사건명', '결정명', 'caseName', '제목')
+                    date = self._get_value(case, '종국일자', '선고일자', '결정일자', 'decisionDate')
+                    case_no = self._get_value(case, '사건번호', 'caseNo', 'caseNumber')
+                    if name or case_no:
+                        context_parts.append(f"{idx}. {name or '(사건명 없음)'}")
+                        if case_no:
+                            context_parts.append(f"   - 사건번호: {case_no}")
+                        if date:
+                            context_parts.append(f"   - 종국일: {date}")
 
             # 법령해석례 (상위 25개 - 핵심 자료)
             if basic.get('expc'):
                 expcs = basic['expc']
                 context_parts.append(f"\n[법령해석례/유권해석] (총 {len(expcs)}건) ★ 핵심 자료")
                 for idx, interp in enumerate(expcs[:25], 1):
-                    name = interp.get('안건명', '')
-                    no = interp.get('안건번호', '')
-                    org = interp.get('회신기관명', '')
-                    date = interp.get('회신일자', '')
-                    context_parts.append(f"{idx}. {name}")
-                    if no:
-                        context_parts.append(f"   - 안건번호: {no}")
-                    if org:
-                        context_parts.append(f"   - 회신기관: {org}")
-                    if date:
-                        context_parts.append(f"   - 회신일자: {date}")
+                    name = self._get_value(interp, '안건명', '제목', 'title', 'caseName')
+                    no = self._get_value(interp, '안건번호', 'caseNo', 'number')
+                    org = self._get_value(interp, '회신기관명', '회신기관', 'replyOrg')
+                    date = self._get_value(interp, '회신일자', 'replyDate')
+                    if name or no:
+                        context_parts.append(f"{idx}. {name or '(안건명 없음)'}")
+                        if no:
+                            context_parts.append(f"   - 안건번호: {no}")
+                        if org:
+                            context_parts.append(f"   - 회신기관: {org}")
+                        if date:
+                            context_parts.append(f"   - 회신일자: {date}")
 
             # 행정심판례 (상위 25개 - 핵심 자료)
             if basic.get('decc'):
                 deccs = basic['decc']
                 context_parts.append(f"\n[행정심판례] (총 {len(deccs)}건) ★ 핵심 자료")
                 for idx, ruling in enumerate(deccs[:25], 1):
-                    name = ruling.get('사건명', '')
-                    date = ruling.get('의결일자', ruling.get('재결일자', ''))
-                    case_no = ruling.get('사건번호', '')
-                    result = ruling.get('재결결과', ruling.get('재결구분명', ''))
-                    context_parts.append(f"{idx}. {name}")
-                    if case_no:
-                        context_parts.append(f"   - 사건번호: {case_no}")
-                    if result:
-                        context_parts.append(f"   - 재결결과: {result}")
-                    if date:
-                        context_parts.append(f"   - 의결일: {date}")
+                    name = self._get_value(ruling, '사건명', '제목', 'caseName', 'title')
+                    date = self._get_value(ruling, '의결일자', '재결일자', 'decisionDate')
+                    case_no = self._get_value(ruling, '사건번호', 'caseNo', 'caseNumber')
+                    result = self._get_value(ruling, '재결결과', '재결구분명', 'result')
+                    if name or case_no:
+                        context_parts.append(f"{idx}. {name or '(사건명 없음)'}")
+                        if case_no:
+                            context_parts.append(f"   - 사건번호: {case_no}")
+                        if result:
+                            context_parts.append(f"   - 재결결과: {result}")
+                        if date:
+                            context_parts.append(f"   - 의결일: {date}")
 
             # 행정규칙 (상위 10개)
             if basic.get('admrul'):
                 admruls = basic['admrul']
                 context_parts.append(f"\n[행정규칙] (총 {len(admruls)}건)")
                 for idx, rule in enumerate(admruls[:10], 1):
-                    name = rule.get('행정규칙명', '')
-                    dept = rule.get('소관부처명', rule.get('소관부처', ''))
-                    context_parts.append(f"{idx}. {name}")
-                    if dept:
-                        context_parts.append(f"   - 소관부처: {dept}")
+                    name = self._get_value(rule, '행정규칙명', '제목', 'ruleName', 'title')
+                    dept = self._get_value(rule, '소관부처명', '소관부처', 'competentDept')
+                    if name:
+                        context_parts.append(f"{idx}. {name}")
+                        if dept:
+                            context_parts.append(f"   - 소관부처: {dept}")
 
             # 자치법규 (상위 10개)
             if basic.get('ordin'):
                 ordins = basic['ordin']
                 context_parts.append(f"\n[자치법규] (총 {len(ordins)}건)")
                 for idx, ordin in enumerate(ordins[:10], 1):
-                    name = ordin.get('자치법규명', '')
-                    local = ordin.get('지자체기관명', ordin.get('자치단체명', ''))
+                    name = self._get_value(ordin, '자치법규명', '제목', 'ordinName', 'title')
+                    local = self._get_value(ordin, '지자체기관명', '자치단체명', 'localGovt')
                     context_parts.append(f"{idx}. {name}")
                     if local:
                         context_parts.append(f"   - 지자체: {local}")
@@ -1211,44 +1235,48 @@ def display_search_results_detail(legal_data: Dict, engine: LegalAIEngine):
     if basic.get('prec'):
         with st.expander(f"📚 검색된 판례 ({len(basic['prec'])}건)", expanded=True):
             for idx, prec in enumerate(basic['prec'][:20], 1):
-                case_name = prec.get('사건명', prec.get('판례명', ''))
-                case_no = prec.get('사건번호', '')
-                court = prec.get('법원명', '')
-                date = prec.get('선고일자', '')
-                st.markdown(f"**{idx}. {case_name}**")
-                st.caption(f"사건번호: {case_no} | 법원: {court} | 선고일: {date}")
+                case_name = engine._get_value(prec, '사건명', '판례명', 'caseName', 'caseNm', '제목')
+                case_no = engine._get_value(prec, '사건번호', 'caseNo', 'caseNumber')
+                court = engine._get_value(prec, '법원명', '법원', 'courtName', 'court')
+                date = engine._get_value(prec, '선고일자', '판결일자', 'judgmentDate', 'decisionDate')
+                display_name = case_name or case_no or '(정보 없음)'
+                st.markdown(f"**{idx}. {display_name}**")
+                st.caption(f"사건번호: {case_no or '-'} | 법원: {court or '-'} | 선고일: {date or '-'}")
 
     # 법령해석례 상세
     if basic.get('expc'):
         with st.expander(f"📋 검색된 법령해석례 ({len(basic['expc'])}건)", expanded=True):
             for idx, expc in enumerate(basic['expc'][:20], 1):
-                title = expc.get('안건명', expc.get('제목', ''))
-                no = expc.get('안건번호', '')
-                org = expc.get('회신기관명', expc.get('회신기관', ''))
-                date = expc.get('회신일자', '')
-                st.markdown(f"**{idx}. {title}**")
-                st.caption(f"안건번호: {no} | 회신기관: {org} | 회신일: {date}")
+                title = engine._get_value(expc, '안건명', '제목', 'title', 'caseName')
+                no = engine._get_value(expc, '안건번호', 'caseNo', 'number')
+                org = engine._get_value(expc, '회신기관명', '회신기관', 'replyOrg')
+                date = engine._get_value(expc, '회신일자', 'replyDate')
+                display_name = title or no or '(정보 없음)'
+                st.markdown(f"**{idx}. {display_name}**")
+                st.caption(f"안건번호: {no or '-'} | 회신기관: {org or '-'} | 회신일: {date or '-'}")
 
     # 행정심판례 상세
     if basic.get('decc'):
         with st.expander(f"⚖️ 검색된 행정심판례 ({len(basic['decc'])}건)", expanded=True):
             for idx, decc in enumerate(basic['decc'][:20], 1):
-                case_name = decc.get('사건명', '')
-                case_no = decc.get('사건번호', '')
-                result = decc.get('재결결과', decc.get('재결구분명', ''))
-                date = decc.get('의결일자', decc.get('재결일자', ''))
-                st.markdown(f"**{idx}. {case_name}**")
-                st.caption(f"사건번호: {case_no} | 재결결과: {result} | 의결일: {date}")
+                case_name = engine._get_value(decc, '사건명', '제목', 'caseName', 'title')
+                case_no = engine._get_value(decc, '사건번호', 'caseNo', 'caseNumber')
+                result = engine._get_value(decc, '재결결과', '재결구분명', 'result')
+                date = engine._get_value(decc, '의결일자', '재결일자', 'decisionDate')
+                display_name = case_name or case_no or '(정보 없음)'
+                st.markdown(f"**{idx}. {display_name}**")
+                st.caption(f"사건번호: {case_no or '-'} | 재결결과: {result or '-'} | 의결일: {date or '-'}")
 
     # 헌재결정례 상세
     if basic.get('detc'):
         with st.expander(f"🏛️ 검색된 헌재결정례 ({len(basic['detc'])}건)", expanded=False):
             for idx, detc in enumerate(basic['detc'][:10], 1):
-                case_name = detc.get('사건명', '')
-                case_no = detc.get('사건번호', '')
-                date = detc.get('종국일자', detc.get('선고일자', ''))
-                st.markdown(f"**{idx}. {case_name}**")
-                st.caption(f"사건번호: {case_no} | 종국일: {date}")
+                case_name = engine._get_value(detc, '사건명', '결정명', 'caseName', '제목')
+                case_no = engine._get_value(detc, '사건번호', 'caseNo', 'caseNumber')
+                date = engine._get_value(detc, '종국일자', '선고일자', '결정일자', 'decisionDate')
+                display_name = case_name or case_no or '(정보 없음)'
+                st.markdown(f"**{idx}. {display_name}**")
+                st.caption(f"사건번호: {case_no or '-'} | 종국일: {date or '-'}")
 
 def display_search_statistics(fact_sheet: Dict, engine: LegalAIEngine):
     """검색 결과 통계 표시"""
