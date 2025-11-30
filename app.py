@@ -299,7 +299,7 @@ class LegalAIEngine:
         }
 
     def extract_keywords(self, user_input: str) -> List[str]:
-        """사용자 입력에서 법률 관련 핵심 키워드 추출"""
+        """사용자 입력에서 법률 관련 핵심 키워드 추출 - 법률명/조문 우선"""
         # 불용어 정의
         stopwords = ['은', '는', '이', '가', '을', '를', '의', '에', '에서', '으로', '로',
                     '와', '과', '도', '만', '뿐', '까지', '부터', '에게', '한테', '께',
@@ -308,12 +308,42 @@ class LegalAIEngine:
                     '것', '수', '때', '등', '및', '또는', '그리고', '하지만', '그러나',
                     '어떻게', '무엇', '어디', '언제', '누구', '왜', '어떤',
                     '좀', '잘', '더', '매우', '정말', '아주', '너무', '많이',
-                    '저', '제', '나', '내', '우리', '저희', '그', '그녀', '그들']
+                    '저', '제', '나', '내', '우리', '저희', '그', '그녀', '그들',
+                    '현행', '해당', '요건', '확인', '검색', '관련', '판례']
 
-        # 법률 관련 중요 키워드 (우선 추출)
-        legal_keywords = [
-            '해고', '부당해고', '임금', '퇴직금', '근로', '노동', '계약', '위반',
-            '손해배상', '불법행위', '채무불이행', '계약해지', '계약해제',
+        keywords = []
+
+        # 1. 법률명 패턴 추출 (XX법, XX령, XX규칙 등) - 최우선
+        law_patterns = re.findall(r'[가-힣]+(?:법|령|규칙|조례|규정|지침|고시)', user_input)
+        for law in law_patterns:
+            if len(law) >= 3 and law not in keywords:
+                keywords.append(law)
+
+        # 2. 조문 관련 추출 (제X조, 제X항 등)
+        article_patterns = re.findall(r'제\d+조(?:의\d+)?(?:제\d+항)?', user_input)
+        keywords.extend(article_patterns)
+
+        # 3. 금융/대부업 관련 복합 키워드 (구체적인 용어 우선)
+        specific_legal_terms = [
+            '대부업', '대부중개업', '매입채권추심업', '매입채권', '추심업',
+            '자기자본', '자본금', '등록요건', '영업요건',
+            '금융업', '여신업', '신용정보', '채권추심', '채권매입',
+            '등록기준', '허가기준', '인가기준', '자본요건',
+            '부당해고', '해고무효', '부당노동행위', '근로계약',
+            '임대차보호', '상가임대차', '주택임대차', '전세보증금',
+            '손해배상', '불법행위', '채무불이행', '계약위반',
+            '개인정보보호', '정보주체', '개인정보처리',
+            '공정거래', '독점규제', '불공정거래', '시장지배적지위',
+        ]
+
+        for term in specific_legal_terms:
+            if term in user_input and term not in keywords:
+                keywords.append(term)
+
+        # 4. 일반 법률 키워드
+        general_legal_keywords = [
+            '해고', '임금', '퇴직금', '근로', '노동', '계약', '위반',
+            '손해배상', '불법행위', '계약해지', '계약해제',
             '임대차', '전세', '월세', '보증금', '명도', '인도',
             '상속', '유언', '증여', '재산분할', '이혼', '위자료', '양육비',
             '형사', '민사', '행정', '소송', '재판', '항소', '상고',
@@ -328,28 +358,21 @@ class LegalAIEngine:
             '위임', '대리', '보증', '연대보증'
         ]
 
-        keywords = []
-
-        # 1. 법률 관련 키워드 먼저 추출
-        input_lower = user_input.lower()
-        for kw in legal_keywords:
-            if kw in user_input:
+        for kw in general_legal_keywords:
+            if kw in user_input and kw not in keywords:
                 keywords.append(kw)
 
-        # 2. 명사 추출 (간단한 패턴 매칭)
-        # 한글 단어 추출 (2글자 이상)
+        # 5. 남은 명사 추출 (2글자 이상, 4글자 이상 우선)
         words = re.findall(r'[가-힣]{2,}', user_input)
-        for word in words:
-            # 불용어 제거
-            is_stopword = False
-            for sw in stopwords:
-                if word.endswith(sw) or word == sw:
-                    is_stopword = True
-                    break
+        long_words = [w for w in words if len(w) >= 4]
+        short_words = [w for w in words if len(w) >= 2 and len(w) < 4]
+
+        for word in long_words + short_words:
+            is_stopword = any(word.endswith(sw) or word == sw for sw in stopwords)
             if not is_stopword and word not in keywords:
                 keywords.append(word)
 
-        # 3. 중복 제거 및 상위 키워드 반환
+        # 6. 중복 제거 및 상위 키워드 반환
         unique_keywords = list(dict.fromkeys(keywords))
         return unique_keywords[:10]  # 최대 10개 키워드
 
