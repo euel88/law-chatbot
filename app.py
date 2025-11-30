@@ -356,8 +356,14 @@ class LegalAIEngine:
     async def _search_by_target(self, session, query: str, target: str,
                                 display: int = 10) -> List[Dict]:
         """특정 target으로 검색"""
+        # API 키 재확인
+        api_key = self.law_api_key or get_law_api_key()
+        if not api_key:
+            logger.warning(f"법제처 API 키가 없습니다. ({target} 검색 불가)")
+            return []
+
         params = {
-            'OC': self.law_api_key,
+            'OC': api_key,
             'target': target,
             'query': query,
             'type': 'JSON',
@@ -368,26 +374,57 @@ class LegalAIEngine:
             async with session.get(
                 self.api_endpoints['search'],
                 params=params,
-                timeout=aiohttp.ClientTimeout(total=15)
+                timeout=aiohttp.ClientTimeout(total=30)
             ) as response:
                 if response.status == 200:
                     text = await response.text()
                     try:
                         data = json.loads(text)
-                        # 각 target별 응답 키 확인
-                        possible_keys = [target, target.lower(),
-                                        target.replace('CgmExpc', ''),
-                                        target.replace('SpecialDecc', '')]
+                        logger.info(f"[{target}] API 응답 키: {list(data.keys())}")
+
+                        # 결과 추출 - 다양한 응답 형식 처리
+                        results = []
+
+                        # 1. target 이름과 일치하는 키 확인
+                        possible_keys = [
+                            target,
+                            target.lower(),
+                            target.upper(),
+                            target.replace('CgmExpc', ''),
+                            target.replace('SpecialDecc', ''),
+                        ]
+
                         for key in possible_keys:
                             if key in data:
-                                return data[key] if isinstance(data[key], list) else [data[key]]
-                        # 응답의 첫 번째 키 반환
-                        for key, value in data.items():
-                            if isinstance(value, list):
-                                return value
+                                value = data[key]
+                                if isinstance(value, list):
+                                    results = value
+                                elif isinstance(value, dict):
+                                    results = [value]
+                                break
+
+                        # 2. 결과가 없으면 첫 번째 리스트 값 사용
+                        if not results:
+                            for key, value in data.items():
+                                if key not in ['totalCnt', 'page', 'target', 'section']:
+                                    if isinstance(value, list) and len(value) > 0:
+                                        results = value
+                                        break
+                                    elif isinstance(value, dict):
+                                        results = [value]
+                                        break
+
+                        logger.info(f"[{target}] 검색 결과: {len(results)}건 (쿼리: {query})")
+                        return results
+
+                    except json.JSONDecodeError as e:
+                        logger.error(f"JSON 파싱 오류 ({target}): {e}")
+                        logger.error(f"응답 내용: {text[:500]}")
                         return []
-                    except json.JSONDecodeError:
-                        return []
+                else:
+                    logger.error(f"API 응답 오류 ({target}): 상태코드 {response.status}")
+        except asyncio.TimeoutError:
+            logger.error(f"API 타임아웃 ({target})")
         except Exception as e:
             logger.error(f"검색 오류 ({target}): {e}")
         return []
@@ -878,63 +915,80 @@ AI 분석을 이용하시려면 사이드바에서 OpenAI API 키를 입력해�
         keywords = legal_data.get('keywords', [])
         keywords_str = ', '.join(keywords) if keywords else '없음'
 
-        prompt = f"""
-{AI_LAWYER_SYSTEM_PROMPT}
+        # 검색 결과가 있는지 확인
+        has_results = bool(context and context.strip())
 
-[서비스 유형: 법률 연구 및 자료 검색]
+        if has_results:
+            prompt = f"""당신은 한국 법률 전문가입니다. 아래에 법제처 Open API에서 검색된 **실제 법률 자료**가 제공됩니다.
+반드시 이 검색 결과를 기반으로 답변해야 합니다.
 
-## 의뢰인 상황/질문:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 의뢰인 질문/상황:
 {query}
 
-## 추출된 핵심 키워드:
+## 추출된 검색 키워드:
 {keywords_str}
 
-## 사실관계 Timeline:
-{timeline if timeline else "특별한 일자 정보 없음"}
-
-## 검색 결과 통계:
+## 검색 통계:
 {stats_summary}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-## 검색된 법률 정보 (실제 법제처 데이터):
+## 🔍 법제처에서 검색된 실제 법률 자료:
 {context}
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+## ⚠️ 필수 지침 (반드시 준수):
+1. **위에 제공된 검색 결과만 사용하세요.** 일반적인 법률 지식으로 답변하지 마세요.
+2. **판례를 인용할 때는 반드시 위 목록에서 사건번호를 정확히 복사하세요.**
+   예: "대법원 2020다12345 판결에서..."
+3. **법령해석례를 인용할 때는 안건번호를 명시하세요.**
+   예: "법제처 안건번호 22-0123에 따르면..."
+4. **행정심판례를 인용할 때는 사건번호를 명시하세요.**
+   예: "중앙행정심판위원회 2023-12345 재결에서..."
+5. 위 검색 결과에 없는 내용은 "검색 결과에 포함되지 않음"이라고 명시하세요.
+
+## 답변 형식:
+
+### 📋 핵심 요약
+[의뢰인 상황에 대한 2-3문장 핵심 결론]
+
+### 📚 관련 판례 (위 검색 결과에서 인용)
+[검색된 판례 목록에서 관련 판례를 선택하여 사건번호와 함께 상세 설명]
+- **사건번호**: [위에서 복사]
+- **법원/선고일**: [위에서 복사]
+- **판시사항**: [내용 설명]
+- **의뢰인 사안 적용**: [분석]
+
+### 📋 관련 법령해석례/행정심판례 (위 검색 결과에서 인용)
+[검색된 해석례/심판례에서 관련 건을 선택하여 안건번호와 함께 설명]
+
+### 📖 관련 법령
+[검색된 법령 중 관련 법령 인용]
+
+### 💡 종합 의견 및 조언
+[위 자료들을 종합한 분석]
+
 ---
-## 중요 지침:
-1. 위에 제공된 "검색된 법률 정보"는 법제처 Open API에서 실제로 검색된 자료입니다.
-2. 답변 시 반드시 위 검색 결과에서 구체적인 판례번호, 법령해석례 안건번호, 행정심판례 사건번호를 인용하세요.
-3. 일반적인 법률 지식이 아닌, 검색된 실제 자료를 기반으로 답변하세요.
-4. 검색 결과가 부족한 경우 그 사실을 명시하세요.
+⚖️ 본 내용은 AI가 작성한 참고자료이며, 법률자문이 아닙니다.
+구체적인 사안에 대해서는 반드시 변호사 등 전문가의 검토가 필요합니다.
+"""
+        else:
+            prompt = f"""당신은 한국 법률 전문가입니다.
 
-## 답변 구조:
+## 의뢰인 질문/상황:
+{query}
 
-### 1. 핵심 답변 (2-3문장 요약)
-[의뢰인 상황에 대한 핵심 결론]
+## 추출된 검색 키워드:
+{keywords_str}
 
-### 2. 관련 법령 분석
-[검색된 법령 중 관련 법령을 구체적으로 인용]
-- 법령명, 조항 번호 명시
-- 해당 조항의 핵심 내용 설명
+## ⚠️ 검색 결과:
+법제처 Open API 검색 결과가 없습니다.
 
-### 3. 관련 판례 분석 (★ 중요)
-[검색된 판례를 사건번호와 함께 구체적으로 인용]
-- 각 판례의 사건번호, 선고일자, 법원 명시
-- 해당 판례의 판시사항/시사점 설명
-- 의뢰인 상황과의 관련성 분석
-
-### 4. 유권해석/행정심판례 분석 (★ 중요)
-[검색된 법령해석례, 행정심판례를 안건번호와 함께 구체적으로 인용]
-- 각 해석례/심판례의 안건번호, 회신기관/재결청 명시
-- 해석/재결의 핵심 내용
-- 의뢰인 상황에 대한 시사점
-
-### 5. 종합 의견 및 실무적 조언
-- 위 자료들을 종합한 법적 판단
-- 구체적인 대응 방안 제시
-- 주의사항
-
-### 6. 추가 확인사항
-- 더 정확한 조언을 위해 필요한 정보
-- 추가 검색이 필요한 분야
+## 지침:
+1. 검색 결과가 없음을 먼저 안내하세요.
+2. 일반적인 법률 정보를 제공하되, "법제처 검색 결과 없음"을 명시하세요.
+3. 다른 검색어 제안을 포함하세요.
 
 ---
 ⚖️ 본 내용은 AI가 작성한 참고자료이며, 법률자문이 아닙니다.
@@ -1012,6 +1066,56 @@ def display_chat_message(role: str, content: str):
     else:
         st.markdown(content)
 
+def display_search_results_detail(legal_data: Dict, engine: LegalAIEngine):
+    """검색된 판례/유권해석 상세 표시"""
+    if not legal_data:
+        return
+
+    basic = legal_data.get('basic', {})
+
+    # 판례 상세
+    if basic.get('prec'):
+        with st.expander(f"📚 검색된 판례 ({len(basic['prec'])}건)", expanded=True):
+            for idx, prec in enumerate(basic['prec'][:20], 1):
+                case_name = prec.get('사건명', prec.get('판례명', ''))
+                case_no = prec.get('사건번호', '')
+                court = prec.get('법원명', '')
+                date = prec.get('선고일자', '')
+                st.markdown(f"**{idx}. {case_name}**")
+                st.caption(f"사건번호: {case_no} | 법원: {court} | 선고일: {date}")
+
+    # 법령해석례 상세
+    if basic.get('expc'):
+        with st.expander(f"📋 검색된 법령해석례 ({len(basic['expc'])}건)", expanded=True):
+            for idx, expc in enumerate(basic['expc'][:20], 1):
+                title = expc.get('안건명', expc.get('제목', ''))
+                no = expc.get('안건번호', '')
+                org = expc.get('회신기관명', expc.get('회신기관', ''))
+                date = expc.get('회신일자', '')
+                st.markdown(f"**{idx}. {title}**")
+                st.caption(f"안건번호: {no} | 회신기관: {org} | 회신일: {date}")
+
+    # 행정심판례 상세
+    if basic.get('decc'):
+        with st.expander(f"⚖️ 검색된 행정심판례 ({len(basic['decc'])}건)", expanded=True):
+            for idx, decc in enumerate(basic['decc'][:20], 1):
+                case_name = decc.get('사건명', '')
+                case_no = decc.get('사건번호', '')
+                result = decc.get('재결결과', decc.get('재결구분명', ''))
+                date = decc.get('의결일자', decc.get('재결일자', ''))
+                st.markdown(f"**{idx}. {case_name}**")
+                st.caption(f"사건번호: {case_no} | 재결결과: {result} | 의결일: {date}")
+
+    # 헌재결정례 상세
+    if basic.get('detc'):
+        with st.expander(f"🏛️ 검색된 헌재결정례 ({len(basic['detc'])}건)", expanded=False):
+            for idx, detc in enumerate(basic['detc'][:10], 1):
+                case_name = detc.get('사건명', '')
+                case_no = detc.get('사건번호', '')
+                date = detc.get('종국일자', detc.get('선고일자', ''))
+                st.markdown(f"**{idx}. {case_name}**")
+                st.caption(f"사건번호: {case_no} | 종국일: {date}")
+
 def display_search_statistics(fact_sheet: Dict, engine: LegalAIEngine):
     """검색 결과 통계 표시"""
     stats = fact_sheet.get('statistics', {})
@@ -1056,12 +1160,42 @@ async def process_search(query: str, search_options: Dict):
     """검색 처리"""
     engine = LegalAIEngine()
 
-    with st.spinner("🔍 법률 데이터 검색 중..."):
+    # 검색 상태 표시 영역
+    status_container = st.container()
+
+    with status_container:
+        st.info("🔍 법률 데이터 검색을 시작합니다...")
         progress = st.progress(0)
 
+        # API 키 확인
+        api_key = get_law_api_key()
+        if not api_key:
+            st.error("❌ 법제처 API 키가 설정되지 않았습니다. 사이드바에서 API 키를 입력해주세요.")
+            return {}, {}, "법제처 API 키가 필요합니다.", engine
+
         # 1. 종합 검색
-        progress.progress(30, "법제처 데이터베이스 검색 중...")
+        progress.progress(20, "법제처 데이터베이스 검색 중...")
         legal_data = await engine.comprehensive_search(query, search_options)
+
+        # 검색 결과 요약 표시
+        basic = legal_data.get('basic', {})
+        search_summary = []
+        if basic.get('prec'):
+            search_summary.append(f"판례 {len(basic['prec'])}건")
+        if basic.get('expc'):
+            search_summary.append(f"법령해석례 {len(basic['expc'])}건")
+        if basic.get('decc'):
+            search_summary.append(f"행정심판례 {len(basic['decc'])}건")
+        if basic.get('law') or basic.get('eflaw'):
+            laws = (basic.get('law', []) or []) + (basic.get('eflaw', []) or [])
+            if laws:
+                search_summary.append(f"법령 {len(laws)}건")
+
+        if search_summary:
+            progress.progress(50, f"검색 완료: {', '.join(search_summary)}")
+        else:
+            st.warning("⚠️ 검색 결과가 없습니다. 다른 검색어로 시도해보세요.")
+            progress.progress(50, "검색 결과 없음")
 
         # 2. 사실관계 정리
         progress.progress(60, "검색 결과 분석 중...")
@@ -1072,8 +1206,14 @@ async def process_search(query: str, search_options: Dict):
         advice = await engine.generate_legal_advice(query, legal_data, fact_sheet)
 
         progress.progress(100, "완료!")
-        time.sleep(0.3)
+        time.sleep(0.5)
         progress.empty()
+
+        # 최종 검색 결과 요약
+        if search_summary:
+            st.success(f"✅ 검색 완료: {', '.join(search_summary)}")
+        else:
+            st.warning("검색 결과가 없습니다.")
 
     return legal_data, fact_sheet, advice, engine
 
@@ -1495,9 +1635,17 @@ def main():
             engine = LegalAIEngine()
             display_search_statistics(st.session_state.fact_sheet, engine)
 
-    # ===== 탭 2: PDF 번역 =====
-    with tab2:
-        render_pdf_translation_tab()
+    # 검색 결과 상세 표시 (판례, 유권해석 등)
+    if st.session_state.search_results:
+        engine = LegalAIEngine()
+        st.markdown("---")
+        st.markdown("## 📑 검색된 법률 자료")
+        display_search_results_detail(st.session_state.search_results, engine)
+
+    # 검색 통계 표시
+    if st.session_state.fact_sheet:
+        engine = LegalAIEngine()
+        display_search_statistics(st.session_state.fact_sheet, engine)
 
 # ===== 앱 실행 =====
 if __name__ == "__main__":
