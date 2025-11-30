@@ -468,7 +468,7 @@ class LegalAIEngine:
 """
 
             response = client.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-5.1",
                 messages=[
                     {"role": "system", "content": "당신은 한국 법률 검색 전문가입니다. JSON 형식으로만 응답합니다."},
                     {"role": "user", "content": prompt}
@@ -1268,7 +1268,7 @@ AI 분석을 이용하시려면 사이드바에서 OpenAI API 키를 입력해�
             if not client:
                 return "AI 응답을 생성할 수 없습니다. OpenAI API 키를 확인해주세요."
             response = client.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-5.1",
                 messages=[
                     {"role": "system", "content": AI_LAWYER_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
@@ -1382,7 +1382,7 @@ AI 분석을 이용하시려면 사이드바에서 OpenAI API 키를 입력해�
             if not client:
                 return self._generate_fallback_response(query, legal_data)
             response = client.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-5.1",
                 messages=[
                     {"role": "system", "content": AI_LAWYER_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
@@ -1496,7 +1496,7 @@ AI 분석을 이용하시려면 사이드바에서 OpenAI API 키를 입력해�
             if not client:
                 return self._generate_fallback_response(query, legal_data)
             response = client.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-5.1",
                 messages=[
                     {"role": "system", "content": AI_LAWYER_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
