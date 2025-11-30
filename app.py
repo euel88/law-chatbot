@@ -187,6 +187,10 @@ def get_openai_client():
     """OpenAI 클라이언트 가져오기"""
     api_key = get_openai_api_key()
     if api_key:
+        # API 키 형식 검증 (sk-로 시작해야 함)
+        if not api_key.startswith('sk-'):
+            logger.warning(f"잘못된 OpenAI API 키 형식: {api_key[:20]}... (sk-로 시작해야 합니다)")
+            return None
         return OpenAI(api_key=api_key)
     return None
 
@@ -2230,11 +2234,15 @@ def main():
             )
 
             if st.button("API 키 저장", use_container_width=True):
-                st.session_state.law_api_key = law_api_input
-                st.session_state.openai_api_key = openai_api_input
-                st.session_state.api_keys_set = True
-                st.success("API 키가 저장되었습니다!")
-                st.rerun()
+                # OpenAI API 키 형식 검증
+                if openai_api_input and not openai_api_input.startswith('sk-'):
+                    st.error("⚠️ OpenAI API 키는 'sk-'로 시작해야 합니다. https://platform.openai.com 에서 올바른 API 키를 복사해주세요.")
+                else:
+                    st.session_state.law_api_key = law_api_input
+                    st.session_state.openai_api_key = openai_api_input
+                    st.session_state.api_keys_set = True
+                    st.success("API 키가 저장되었습니다!")
+                    st.rerun()
 
         st.divider()
 
@@ -2250,7 +2258,10 @@ def main():
             st.caption("검색 기능을 사용하려면 법제처 API 키가 필요합니다.")
 
         if openai_key:
-            st.success("✅ GPT-5 AI 엔진 활성화")
+            if openai_key.startswith('sk-'):
+                st.success("✅ GPT-5.1 AI 엔진 활성화")
+            else:
+                st.error("⚠️ OpenAI API 키 형식 오류 (sk-로 시작해야 함)")
         else:
             st.warning("⚠️ OpenAI API 미설정")
             st.caption("AI 분석 없이 검색 결과만 표시됩니다.")
