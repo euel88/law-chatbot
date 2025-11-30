@@ -1,6 +1,7 @@
 """
-AI 법률 연구 도우미 - 판례, 유권해석, 법령 종합 검색 서비스
+AI 법률 연구 도우미 - 판례, 유권해석, 법령 종합 검색 서비스 + PDF 번역
 법제처 API + ChatGPT를 활용한 법률 자료 검색 및 분석
+PDF 문서 번역 기능 (PDFMathTranslate 스타일)
 
 실행 방법:
 streamlit run app.py
@@ -23,6 +24,13 @@ import logging
 from enum import Enum
 import re
 
+# PDF 번역 모듈 (선택적 import)
+try:
+    from pdf_translator import PDFTranslator, translate_pdf_file
+    PDF_TRANSLATOR_AVAILABLE = True
+except ImportError:
+    PDF_TRANSLATOR_AVAILABLE = False
+
 # Streamlit 환경에서 asyncio 이벤트 루프 충돌 방지
 nest_asyncio.apply()
 
@@ -35,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 # ===== 페이지 설정 =====
 st.set_page_config(
-    page_title="AI 법률 연구 도우미",
+    page_title="AI 법률 도우미 & PDF 번역",
     page_icon="⚖️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -86,6 +94,30 @@ st.markdown("""
         padding: 0.5rem 1rem;
         border-radius: 5px;
         margin: 1rem 0 0.5rem 0;
+    }
+
+    .pdf-upload-area {
+        border: 2px dashed #ccc;
+        border-radius: 10px;
+        padding: 2rem;
+        text-align: center;
+        background-color: #fafafa;
+        margin: 1rem 0;
+    }
+
+    .pdf-preview {
+        border: 1px solid #e0e0e0;
+        border-radius: 5px;
+        padding: 1rem;
+        margin: 1rem 0;
+        background-color: #fff;
+    }
+
+    .translation-progress {
+        padding: 1rem;
+        background-color: #e3f2fd;
+        border-radius: 5px;
+        margin: 1rem 0;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -1185,17 +1217,169 @@ async def process_search(query: str, search_options: Dict):
 
     return legal_data, fact_sheet, advice, engine
 
+# ===== PDF 번역 UI 함수 =====
+def render_pdf_translation_tab():
+    """PDF 번역 탭 렌더링"""
+    st.header("📄 PDF 문서 번역")
+    st.markdown("PDF 문서를 업로드하면 텍스트를 추출하고 번역합니다. (수식은 보존됩니다)")
+
+    if not PDF_TRANSLATOR_AVAILABLE:
+        st.error("PDF 번역 모듈을 사용할 수 없습니다. 필요한 패키지를 설치해주세요.")
+        st.code("pip install pymupdf Pillow pytesseract reportlab", language="bash")
+        return
+
+    # OpenAI API 키 확인
+    openai_key = get_openai_api_key()
+    if not openai_key:
+        st.warning("OpenAI API 키가 설정되지 않았습니다. 사이드바에서 API 키를 입력해주세요.")
+
+    # 번역 설정
+    col1, col2 = st.columns(2)
+    with col1:
+        source_lang = st.selectbox(
+            "원본 언어",
+            options=["en", "ko", "ja", "zh", "de", "fr", "es", "ru"],
+            format_func=lambda x: {
+                "en": "영어", "ko": "한국어", "ja": "일본어",
+                "zh": "중국어", "de": "독일어", "fr": "프랑스어",
+                "es": "스페인어", "ru": "러시아어"
+            }.get(x, x),
+            index=0
+        )
+    with col2:
+        target_lang = st.selectbox(
+            "번역 언어",
+            options=["ko", "en", "ja", "zh", "de", "fr", "es", "ru"],
+            format_func=lambda x: {
+                "en": "영어", "ko": "한국어", "ja": "일본어",
+                "zh": "중국어", "de": "독일어", "fr": "프랑스어",
+                "es": "스페인어", "ru": "러시아어"
+            }.get(x, x),
+            index=0
+        )
+
+    # 번역 옵션
+    col1, col2 = st.columns(2)
+    with col1:
+        translate_text = st.checkbox("텍스트 블록 번역", value=True,
+                                    help="PDF의 텍스트 블록을 추출하여 번역합니다")
+    with col2:
+        translate_images = st.checkbox("이미지 OCR 번역", value=False,
+                                      help="이미지에서 텍스트를 OCR로 추출하여 번역합니다 (Tesseract 필요)")
+
+    st.divider()
+
+    # PDF 파일 업로드
+    uploaded_file = st.file_uploader(
+        "PDF 파일을 업로드하세요",
+        type=["pdf"],
+        help="최대 200MB까지 업로드 가능합니다"
+    )
+
+    if uploaded_file is not None:
+        # 파일 정보 표시
+        st.markdown(f"**파일명:** {uploaded_file.name}")
+        st.markdown(f"**파일 크기:** {uploaded_file.size / 1024 / 1024:.2f} MB")
+
+        # PDF 정보 미리보기
+        pdf_bytes = uploaded_file.read()
+        uploaded_file.seek(0)  # 파일 포인터 리셋
+
+        try:
+            translator = PDFTranslator(
+                openai_client=get_openai_client(),
+                source_lang=source_lang,
+                target_lang=target_lang
+            )
+            pdf_info = translator.get_pdf_info(pdf_bytes)
+
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("페이지 수", pdf_info['page_count'])
+            with col2:
+                st.metric("텍스트 블록", pdf_info['text_blocks_count'])
+            with col3:
+                st.metric("이미지 수", pdf_info['images_count'])
+
+        except Exception as e:
+            st.error(f"PDF 분석 오류: {e}")
+            return
+
+        st.divider()
+
+        # 번역 실행 버튼
+        if st.button("🔄 PDF 번역 시작", type="primary", use_container_width=True):
+            if not openai_key:
+                st.error("OpenAI API 키를 먼저 설정해주세요.")
+                return
+
+            # 진행 상태 표시
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+
+            def update_progress(progress, message="처리 중..."):
+                progress_bar.progress(progress)
+                status_text.text(message)
+
+            try:
+                with st.spinner("PDF 번역 중..."):
+                    # 번역 실행
+                    translated_bytes = translate_pdf_file(
+                        pdf_bytes,
+                        openai_client=get_openai_client(),
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                        translate_text=translate_text,
+                        translate_images=translate_images,
+                        progress_callback=update_progress
+                    )
+
+                progress_bar.progress(100)
+                status_text.text("번역 완료!")
+
+                # 다운로드 버튼
+                output_filename = f"translated_{uploaded_file.name}"
+                st.success("PDF 번역이 완료되었습니다!")
+
+                st.download_button(
+                    label="📥 번역된 PDF 다운로드",
+                    data=translated_bytes,
+                    file_name=output_filename,
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+
+                # 세션에 결과 저장
+                st.session_state['translated_pdf'] = translated_bytes
+                st.session_state['translated_pdf_name'] = output_filename
+
+            except Exception as e:
+                st.error(f"번역 오류: {e}")
+                logger.error(f"PDF 번역 실패: {e}")
+
+    # 이전 번역 결과가 있으면 다운로드 버튼 표시
+    if 'translated_pdf' in st.session_state and st.session_state.get('translated_pdf'):
+        st.divider()
+        st.markdown("### 이전 번역 결과")
+        st.download_button(
+            label="📥 마지막 번역된 PDF 다운로드",
+            data=st.session_state['translated_pdf'],
+            file_name=st.session_state.get('translated_pdf_name', 'translated.pdf'),
+            mime="application/pdf"
+        )
+
+
 # ===== 메인 앱 =====
 def main():
     # 헤더
     col1, col2 = st.columns([3, 1])
     with col1:
-        st.title("⚖️ AI 법률 연구 도우미")
-        st.markdown("판례, 유권해석, 법령 종합 검색 서비스")
+        st.title("⚖️ AI 법률 도우미 & PDF 번역")
+        st.markdown("법률 검색 + PDF 문서 번역 서비스")
     with col2:
         st.markdown("""
         <div style="text-align: right; padding: 1rem;">
-            <small>v6.0 | 법제처 API 전체 연동</small>
+            <small>v7.0 | PDF 번역 기능 추가</small>
         </div>
         """, unsafe_allow_html=True)
 
@@ -1316,131 +1500,140 @@ def main():
             st.session_state.fact_sheet = {}
             st.rerun()
 
-    # ===== 메인 컨텐츠 =====
-    # 웰컴 메시지
-    if not st.session_state.chat_history:
-        st.markdown("""
-        <div class="chat-message assistant-message">
-            <strong>⚖️ AI 법률 연구 도우미:</strong><br><br>
+    # ===== 메인 컨텐츠 (탭 기반) =====
+    tab1, tab2 = st.tabs(["⚖️ 법률 연구", "📄 PDF 번역"])
 
-            안녕하세요! AI 법률 연구 도우미입니다.<br><br>
+    # ===== 탭 1: 법률 연구 =====
+    with tab1:
+        # 웰컴 메시지
+        if not st.session_state.chat_history:
+            st.markdown("""
+            <div class="chat-message assistant-message">
+                <strong>⚖️ AI 법률 연구 도우미:</strong><br><br>
 
-            <b>🔍 검색 가능한 법률 데이터:</b><br>
-            • <b>기본:</b> 법령, 판례, 행정규칙, 자치법규, 헌재결정례, 법령해석례, 행정심판례, 조약<br>
-            • <b>위원회 결정문:</b> 공정거래위원회, 노동위원회, 금융위원회 등 12개 위원회<br>
-            • <b>부처별 법령해석:</b> 고용노동부, 국토교통부 등 30개 이상 부처<br>
-            • <b>특별행정심판:</b> 조세심판원, 해양안전심판원 등<br><br>
+                안녕하세요! AI 법률 연구 도우미입니다.<br><br>
 
-            <b>💡 사용 방법:</b><br>
-            1. 사이드바에서 API 키를 입력하세요<br>
-            2. 검색할 데이터 소스를 선택하세요<br>
-            3. 아래 입력창에 검색어를 입력하세요<br><br>
+                <b>🔍 검색 가능한 법률 데이터:</b><br>
+                • <b>기본:</b> 법령, 판례, 행정규칙, 자치법규, 헌재결정례, 법령해석례, 행정심판례, 조약<br>
+                • <b>위원회 결정문:</b> 공정거래위원회, 노동위원회, 금융위원회 등 12개 위원회<br>
+                • <b>부처별 법령해석:</b> 고용노동부, 국토교통부 등 30개 이상 부처<br>
+                • <b>특별행정심판:</b> 조세심판원, 해양안전심판원 등<br><br>
 
-            어떤 법률 자료를 찾아드릴까요?
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        # 대화 히스토리 표시
-        for msg in st.session_state.chat_history:
-            display_chat_message(msg["role"], msg["content"])
+                <b>💡 사용 방법:</b><br>
+                1. 사이드바에서 API 키를 입력하세요<br>
+                2. 검색할 데이터 소스를 선택하세요<br>
+                3. 아래 입력창에 검색어를 입력하세요<br><br>
 
-    st.divider()
-
-    # 예시 검색어
-    st.markdown("### 💡 예시 검색어")
-    col1, col2, col3 = st.columns(3)
-
-    examples = {
-        "부당해고 구제": "부당해고 구제 절차와 관련 판례",
-        "임대차 보증금": "주택임대차보호법 보증금 반환",
-        "개인정보 침해": "개인정보 침해 손해배상"
-    }
-
-    clicked_example = None
-    for idx, (btn_text, query) in enumerate(examples.items()):
-        with [col1, col2, col3][idx]:
-            if st.button(btn_text, use_container_width=True, key=f"example_{idx}"):
-                clicked_example = query
-
-    # 사용자 입력
-    user_input = st.text_area(
-        "검색어 입력",
-        value=clicked_example if clicked_example else "",
-        placeholder="예: 부당해고 구제 절차, 임대차 보증금 반환 판례 등",
-        height=100,
-        key="search_input"
-    )
-
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        search_button = st.button("🔍 법률 자료 검색", type="primary", use_container_width=True)
-    with col2:
-        if st.session_state.chat_history:
-            if st.button("📄 결과 다운로드"):
-                last_response = st.session_state.chat_history[-1]
-                if last_response["role"] == "assistant":
-                    st.download_button(
-                        label="💾 다운로드",
-                        data=last_response["content"],
-                        file_name=f"법률연구_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-                        mime="text/plain"
-                    )
-
-    # 검색 실행
-    if search_button or clicked_example:
-        query = user_input if user_input else clicked_example
-
-        if not query:
-            st.warning("검색어를 입력해주세요.")
-        elif not get_law_api_key():
-            st.error("법제처 API 키를 입력해주세요.")
+                어떤 법률 자료를 찾아드릴까요?
+            </div>
+            """, unsafe_allow_html=True)
         else:
-            # 세션 상태에서 선택된 위원회 수집
-            engine_for_options = LegalAIEngine()
-            selected_committees = [
-                key for key in engine_for_options.committee_targets.keys()
-                if st.session_state.get(f"comm_{key}", False)
-            ]
+            # 대화 히스토리 표시
+            for msg in st.session_state.chat_history:
+                display_chat_message(msg["role"], msg["content"])
 
-            # 세션 상태에서 선택된 부처 수집
-            selected_ministries = [
-                key for key in engine_for_options.ministry_targets.keys()
-                if st.session_state.get(f"min_{key}", False)
-            ]
+        st.divider()
 
-            # 검색 옵션 구성
-            search_options = {
-                'basic': search_basic,
-                'committees': selected_committees,
-                'ministries': selected_ministries,
-                'special_tribunals': search_special_tribunals
-            }
+        # 예시 검색어
+        st.markdown("### 💡 예시 검색어")
+        col1, col2, col3 = st.columns(3)
 
-            # 검색 실행
-            legal_data, fact_sheet, advice, engine = asyncio.run(
-                process_search(query, search_options)
-            )
+        examples = {
+            "부당해고 구제": "부당해고 구제 절차와 관련 판례",
+            "임대차 보증금": "주택임대차보호법 보증금 반환",
+            "개인정보 침해": "개인정보 침해 손해배상"
+        }
 
-            # 결과 저장
-            st.session_state.search_results = legal_data
-            st.session_state.fact_sheet = fact_sheet
+        clicked_example = None
+        for idx, (btn_text, query) in enumerate(examples.items()):
+            with [col1, col2, col3][idx]:
+                if st.button(btn_text, use_container_width=True, key=f"example_{idx}"):
+                    clicked_example = query
 
-            # 채팅 히스토리에 추가
-            st.session_state.chat_history.append({
-                "role": "user",
-                "content": query,
-                "timestamp": datetime.now().isoformat()
-            })
+        # 사용자 입력
+        user_input = st.text_area(
+            "검색어 입력",
+            value=clicked_example if clicked_example else "",
+            placeholder="예: 부당해고 구제 절차, 임대차 보증금 반환 판례 등",
+            height=100,
+            key="search_input"
+        )
 
-            st.session_state.chat_history.append({
-                "role": "assistant",
-                "content": advice,
-                "legal_data": legal_data,
-                "fact_sheet": fact_sheet,
-                "timestamp": datetime.now().isoformat()
-            })
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            search_button = st.button("🔍 법률 자료 검색", type="primary", use_container_width=True)
+        with col2:
+            if st.session_state.chat_history:
+                if st.button("📄 결과 다운로드"):
+                    last_response = st.session_state.chat_history[-1]
+                    if last_response["role"] == "assistant":
+                        st.download_button(
+                            label="💾 다운로드",
+                            data=last_response["content"],
+                            file_name=f"법률연구_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                            mime="text/plain"
+                        )
 
-            st.rerun()
+        # 검색 실행
+        if search_button or clicked_example:
+            query = user_input if user_input else clicked_example
+
+            if not query:
+                st.warning("검색어를 입력해주세요.")
+            elif not get_law_api_key():
+                st.error("법제처 API 키를 입력해주세요.")
+            else:
+                # 세션 상태에서 선택된 위원회 수집
+                engine_for_options = LegalAIEngine()
+                selected_committees = [
+                    key for key in engine_for_options.committee_targets.keys()
+                    if st.session_state.get(f"comm_{key}", False)
+                ]
+
+                # 세션 상태에서 선택된 부처 수집
+                selected_ministries = [
+                    key for key in engine_for_options.ministry_targets.keys()
+                    if st.session_state.get(f"min_{key}", False)
+                ]
+
+                # 검색 옵션 구성
+                search_options = {
+                    'basic': search_basic,
+                    'committees': selected_committees,
+                    'ministries': selected_ministries,
+                    'special_tribunals': search_special_tribunals
+                }
+
+                # 검색 실행
+                legal_data, fact_sheet, advice, engine = asyncio.run(
+                    process_search(query, search_options)
+                )
+
+                # 결과 저장
+                st.session_state.search_results = legal_data
+                st.session_state.fact_sheet = fact_sheet
+
+                # 채팅 히스토리에 추가
+                st.session_state.chat_history.append({
+                    "role": "user",
+                    "content": query,
+                    "timestamp": datetime.now().isoformat()
+                })
+
+                st.session_state.chat_history.append({
+                    "role": "assistant",
+                    "content": advice,
+                    "legal_data": legal_data,
+                    "fact_sheet": fact_sheet,
+                    "timestamp": datetime.now().isoformat()
+                })
+
+                st.rerun()
+
+        # 검색 통계 표시
+        if st.session_state.fact_sheet:
+            engine = LegalAIEngine()
+            display_search_statistics(st.session_state.fact_sheet, engine)
 
     # 검색 결과 상세 표시 (판례, 유권해석 등)
     if st.session_state.search_results:
