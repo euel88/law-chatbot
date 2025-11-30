@@ -299,7 +299,7 @@ class LegalAIEngine:
         }
 
     def extract_keywords(self, user_input: str) -> List[str]:
-        """사용자 입력에서 법률 관련 핵심 키워드 추출"""
+        """사용자 입력에서 법률 관련 핵심 키워드 추출 - 법률명/조문 우선"""
         # 불용어 정의
         stopwords = ['은', '는', '이', '가', '을', '를', '의', '에', '에서', '으로', '로',
                     '와', '과', '도', '만', '뿐', '까지', '부터', '에게', '한테', '께',
@@ -308,12 +308,42 @@ class LegalAIEngine:
                     '것', '수', '때', '등', '및', '또는', '그리고', '하지만', '그러나',
                     '어떻게', '무엇', '어디', '언제', '누구', '왜', '어떤',
                     '좀', '잘', '더', '매우', '정말', '아주', '너무', '많이',
-                    '저', '제', '나', '내', '우리', '저희', '그', '그녀', '그들']
+                    '저', '제', '나', '내', '우리', '저희', '그', '그녀', '그들',
+                    '현행', '해당', '요건', '확인', '검색', '관련', '판례']
 
-        # 법률 관련 중요 키워드 (우선 추출)
-        legal_keywords = [
-            '해고', '부당해고', '임금', '퇴직금', '근로', '노동', '계약', '위반',
-            '손해배상', '불법행위', '채무불이행', '계약해지', '계약해제',
+        keywords = []
+
+        # 1. 법률명 패턴 추출 (XX법, XX령, XX규칙 등) - 최우선
+        law_patterns = re.findall(r'[가-힣]+(?:법|령|규칙|조례|규정|지침|고시)', user_input)
+        for law in law_patterns:
+            if len(law) >= 3 and law not in keywords:
+                keywords.append(law)
+
+        # 2. 조문 관련 추출 (제X조, 제X항 등)
+        article_patterns = re.findall(r'제\d+조(?:의\d+)?(?:제\d+항)?', user_input)
+        keywords.extend(article_patterns)
+
+        # 3. 금융/대부업 관련 복합 키워드 (구체적인 용어 우선)
+        specific_legal_terms = [
+            '대부업', '대부중개업', '매입채권추심업', '매입채권', '추심업',
+            '자기자본', '자본금', '등록요건', '영업요건',
+            '금융업', '여신업', '신용정보', '채권추심', '채권매입',
+            '등록기준', '허가기준', '인가기준', '자본요건',
+            '부당해고', '해고무효', '부당노동행위', '근로계약',
+            '임대차보호', '상가임대차', '주택임대차', '전세보증금',
+            '손해배상', '불법행위', '채무불이행', '계약위반',
+            '개인정보보호', '정보주체', '개인정보처리',
+            '공정거래', '독점규제', '불공정거래', '시장지배적지위',
+        ]
+
+        for term in specific_legal_terms:
+            if term in user_input and term not in keywords:
+                keywords.append(term)
+
+        # 4. 일반 법률 키워드
+        general_legal_keywords = [
+            '해고', '임금', '퇴직금', '근로', '노동', '계약', '위반',
+            '손해배상', '불법행위', '계약해지', '계약해제',
             '임대차', '전세', '월세', '보증금', '명도', '인도',
             '상속', '유언', '증여', '재산분할', '이혼', '위자료', '양육비',
             '형사', '민사', '행정', '소송', '재판', '항소', '상고',
@@ -328,30 +358,92 @@ class LegalAIEngine:
             '위임', '대리', '보증', '연대보증'
         ]
 
-        keywords = []
-
-        # 1. 법률 관련 키워드 먼저 추출
-        input_lower = user_input.lower()
-        for kw in legal_keywords:
-            if kw in user_input:
+        for kw in general_legal_keywords:
+            if kw in user_input and kw not in keywords:
                 keywords.append(kw)
 
-        # 2. 명사 추출 (간단한 패턴 매칭)
-        # 한글 단어 추출 (2글자 이상)
+        # 5. 남은 명사 추출 (2글자 이상, 4글자 이상 우선)
         words = re.findall(r'[가-힣]{2,}', user_input)
-        for word in words:
-            # 불용어 제거
-            is_stopword = False
-            for sw in stopwords:
-                if word.endswith(sw) or word == sw:
-                    is_stopword = True
-                    break
+        long_words = [w for w in words if len(w) >= 4]
+        short_words = [w for w in words if len(w) >= 2 and len(w) < 4]
+
+        for word in long_words + short_words:
+            is_stopword = any(word.endswith(sw) or word == sw for sw in stopwords)
             if not is_stopword and word not in keywords:
                 keywords.append(word)
 
-        # 3. 중복 제거 및 상위 키워드 반환
+        # 6. 중복 제거 및 상위 키워드 반환
         unique_keywords = list(dict.fromkeys(keywords))
         return unique_keywords[:10]  # 최대 10개 키워드
+
+    def analyze_query_with_ai(self, user_input: str) -> Dict:
+        """AI를 사용하여 사용자 질의 의도 파악 및 검색 키워드 생성"""
+        client = get_openai_client()
+        if not client:
+            # AI 없이 기본 키워드 추출
+            return {
+                'intent': '법률 정보 검색',
+                'keywords': self.extract_keywords(user_input),
+                'search_queries': [user_input]
+            }
+
+        try:
+            prompt = f"""사용자의 법률 질문을 분석하여 다음을 JSON 형식으로 응답해주세요:
+
+사용자 질문: {user_input}
+
+응답 형식:
+{{
+    "intent": "질문의 핵심 의도 (예: 법령 조회, 판례 검색, 요건 확인 등)",
+    "law_names": ["관련 법률명 목록 (예: 대부업법, 민법 등)"],
+    "keywords": ["핵심 검색 키워드 5개 이내"],
+    "search_queries": ["법제처 API 검색에 사용할 구체적인 검색어 3개 이내"]
+}}
+
+참고사항:
+- search_queries는 법제처 Open API 검색에 최적화된 간결한 검색어여야 합니다
+- 법률명이 있으면 반드시 포함하세요
+- 복합 키워드보다 핵심 단어 조합을 사용하세요
+- 예: "대부업법 자기자본", "매입채권추심업 등록요건" 등"""
+
+            response = client.chat.completions.create(
+                model="gpt-5",
+                messages=[
+                    {"role": "system", "content": "당신은 한국 법률 전문가입니다. 사용자의 법률 질문을 분석하여 적절한 검색 키워드를 생성합니다."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_completion_tokens=500
+            )
+
+            result_text = response.choices[0].message.content
+            # JSON 파싱 시도
+            try:
+                # JSON 블록 추출
+                if '```json' in result_text:
+                    json_str = result_text.split('```json')[1].split('```')[0].strip()
+                elif '```' in result_text:
+                    json_str = result_text.split('```')[1].split('```')[0].strip()
+                else:
+                    json_str = result_text.strip()
+
+                result = json.loads(json_str)
+                logger.info(f"AI 의도 분석 결과: {result}")
+                return result
+            except json.JSONDecodeError:
+                logger.warning(f"AI 응답 JSON 파싱 실패: {result_text}")
+                return {
+                    'intent': '법률 정보 검색',
+                    'keywords': self.extract_keywords(user_input),
+                    'search_queries': [user_input]
+                }
+
+        except Exception as e:
+            logger.error(f"AI 의도 분석 오류: {e}")
+            return {
+                'intent': '법률 정보 검색',
+                'keywords': self.extract_keywords(user_input),
+                'search_queries': [user_input]
+            }
 
     async def _search_by_target(self, session, query: str, target: str,
                                 display: int = 10) -> List[Dict]:
@@ -453,8 +545,8 @@ class LegalAIEngine:
             logger.error(f"검색 오류 ({target}): {e}")
         return []
 
-    async def search_basic_legal_data(self, query: str, keywords: List[str] = None) -> Dict:
-        """기본 법률 데이터 검색 (법령, 판례, 행정규칙 등) - 확장 검색"""
+    async def search_basic_legal_data(self, query: str, search_queries: List[str] = None) -> Dict:
+        """기본 법률 데이터 검색 (법령, 판례, 행정규칙 등) - AI 검색어 기반"""
         # 검색 결과 수 설정 (판례, 유권해석 중심으로 대폭 증가)
         display_counts = {
             'law': 30,        # 현행법령(공포일)
@@ -483,15 +575,15 @@ class LegalAIEngine:
                 if not isinstance(results[idx], Exception) and results[idx]:
                     all_results[target_code].extend(results[idx])
 
-        # 추가 키워드로 확장 검색 (판례, 법령해석례, 행정심판례 대상)
-        if keywords:
-            important_targets = ['prec', 'expc', 'decc', 'detc']
-            for keyword in keywords[:5]:  # 상위 5개 키워드만
-                if keyword != query:  # 메인 쿼리와 다른 경우만
+        # AI가 생성한 추가 검색어로 확장 검색 (판례, 법령해석례, 행정심판례, 법령 대상)
+        if search_queries:
+            important_targets = ['prec', 'expc', 'decc', 'detc', 'law', 'eflaw']
+            for search_query in search_queries[:3]:  # 상위 3개 검색어만
+                if search_query != query:  # 메인 쿼리와 다른 경우만
                     async with aiohttp.ClientSession() as session:
                         tasks = []
                         for target_code in important_targets:
-                            tasks.append(self._search_by_target(session, keyword, target_code, 20))
+                            tasks.append(self._search_by_target(session, search_query, target_code, 20))
 
                         kw_results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -568,7 +660,7 @@ class LegalAIEngine:
 
     async def comprehensive_search(self, query: str,
                                   search_options: Dict = None) -> Dict:
-        """종합 법률 검색 - 키워드 추출 및 확장 검색"""
+        """종합 법률 검색 - AI 의도 분석 기반 검색"""
         if search_options is None:
             search_options = {
                 'basic': True,
@@ -577,13 +669,21 @@ class LegalAIEngine:
                 'special_tribunals': True
             }
 
-        # 사용자 입력에서 키워드 추출
-        keywords = self.extract_keywords(query)
-        logger.info(f"추출된 키워드: {keywords}")
+        # AI를 사용하여 질의 의도 분석 및 검색 키워드 생성
+        ai_analysis = self.analyze_query_with_ai(query)
+        keywords = ai_analysis.get('keywords', [])
+        search_queries = ai_analysis.get('search_queries', [query])
+        law_names = ai_analysis.get('law_names', [])
+
+        logger.info(f"AI 의도 분석: {ai_analysis.get('intent', '알 수 없음')}")
+        logger.info(f"검색 키워드: {keywords}")
+        logger.info(f"검색 쿼리: {search_queries}")
 
         results = {
             'query': query,
             'keywords': keywords,
+            'search_queries': search_queries,
+            'ai_analysis': ai_analysis,
             'search_time': datetime.now().isoformat(),
             'basic': {},
             'committees': {},
@@ -591,25 +691,28 @@ class LegalAIEngine:
             'special_tribunals': {}
         }
 
+        # AI가 생성한 검색 쿼리 사용 (없으면 원본 쿼리 사용)
+        primary_query = search_queries[0] if search_queries else query
+
         tasks = []
 
-        # 기본 법률 데이터 검색 (키워드 기반 확장 검색)
+        # 기본 법률 데이터 검색 (AI 생성 검색어 기반)
         if search_options.get('basic', True):
-            tasks.append(('basic', self.search_basic_legal_data(query, keywords)))
+            tasks.append(('basic', self.search_basic_legal_data(primary_query, search_queries)))
 
         # 위원회 결정문 검색
         committees = search_options.get('committees', [])
         if committees:
-            tasks.append(('committees', self.search_committee_decisions(query, committees)))
+            tasks.append(('committees', self.search_committee_decisions(primary_query, committees)))
 
         # 부처별 법령해석 검색
         ministries = search_options.get('ministries', [])
         if ministries:
-            tasks.append(('ministries', self.search_ministry_interpretations(query, ministries)))
+            tasks.append(('ministries', self.search_ministry_interpretations(primary_query, ministries)))
 
         # 특별행정심판례 검색
         if search_options.get('special_tribunals', False):
-            tasks.append(('special_tribunals', self.search_special_tribunals(query)))
+            tasks.append(('special_tribunals', self.search_special_tribunals(primary_query)))
 
         # 병렬 실행
         for key, task in tasks:
