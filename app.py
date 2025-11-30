@@ -377,14 +377,29 @@ class LegalAIEngine:
         return unique_keywords[:10]  # 최대 10개 키워드
 
     def analyze_query_with_ai(self, user_input: str) -> Dict:
-        """AI를 사용하여 사용자 질의 의도 파악 및 검색 키워드 생성"""
+        """AI를 사용하여 사용자 질의 의도 파악 및 검색 키워드 생성
+
+        사용자의 법률 검토 질의를 분석하여:
+        1. 질의 의도와 법적 쟁점 파악
+        2. 관련 법령, 판례, 유권해석 검색을 위한 최적 키워드 생성
+        3. 검색 우선순위 및 추천 검색 유형 제안
+        """
         # 기본 키워드 먼저 추출 (fallback용)
         basic_keywords = self.extract_keywords(user_input)
         default_result = {
             'intent': '법률 정보 검색',
+            'legal_issues': [],
             'law_names': [],
             'keywords': basic_keywords,
-            'search_queries': basic_keywords[:3] if basic_keywords else [user_input]
+            'search_queries': basic_keywords[:3] if basic_keywords else [user_input],
+            'search_priority': {
+                'laws': True,
+                'precedents': True,
+                'interpretations': True,
+                'committee_decisions': False,
+                'ministry_opinions': False
+            },
+            'recommended_sources': ['law', 'prec']
         }
 
         client = get_openai_client()
@@ -393,26 +408,67 @@ class LegalAIEngine:
             return default_result
 
         try:
-            prompt = f"""사용자의 법률 질문을 분석하여 JSON 형식으로만 응답해주세요.
+            prompt = f"""당신은 한국 법률 검색 및 법률 검토 전문가입니다.
+사용자의 법률 검토 질의를 분석하여 법제처 Open API 검색에 최적화된 정보를 추출해주세요.
 
-사용자 질문: {user_input}
+## 사용자 질의
+{user_input}
 
-아래 형식으로만 응답하세요 (다른 설명 없이 JSON만):
+## 분석 요청
+위 질의를 분석하여 아래 JSON 형식으로만 응답하세요 (다른 설명 없이):
+
 {{
-    "intent": "질문의 핵심 의도",
-    "law_names": ["관련 법률명"],
-    "keywords": ["핵심 키워드 5개 이내"],
-    "search_queries": ["법제처 검색어 3개"]
+    "intent": "질문의 핵심 의도 (예: 법적 요건 확인, 위법성 검토, 절차 문의 등)",
+    "legal_issues": ["분석된 법적 쟁점 리스트"],
+    "law_names": ["관련될 수 있는 법률명 (XX법, XX령, XX규칙 형태)"],
+    "keywords": ["핵심 법률 키워드 5개 이내"],
+    "search_queries": ["법제처 API 검색어 5개 - 다양한 조합으로"],
+    "search_priority": {{
+        "laws": true/false,
+        "precedents": true/false,
+        "interpretations": true/false,
+        "committee_decisions": true/false,
+        "ministry_opinions": true/false
+    }},
+    "recommended_sources": ["law", "prec", "expc", "decc", "admrul", "ordin"]
 }}
 
-규칙:
-1. search_queries는 법제처 API 검색용 간결한 검색어
-2. 법률명(XX법)이 있으면 반드시 search_queries에 포함
-3. 예: "대부업법 자기자본", "근로기준법 해고"
+## 검색어 생성 규칙
+1. 법률명이 명시된 경우 → "법률명 + 핵심어" 형태로 검색어 생성 (예: "대부업법 자기자본")
+2. 법률명이 없는 경우 → 법적 개념과 행위 중심 키워드 (예: "임대차 보증금 반환")
+3. 다양한 검색 조합 생성: 법률명+조문, 법률명+요건, 개념어 단독 등
+4. 유사 법률도 함께 검색할 수 있도록 관련 법률명 포함
+
+## 검색 소스 코드
+- law: 법령 (법률, 시행령, 시행규칙)
+- prec: 판례 (대법원, 헌법재판소)
+- expc: 법령해석례 (법제처)
+- decc: 행정심판례
+- admrul: 행정규칙
+- ordin: 자치법규
+
+## 예시
+질의: "대부업법상 자기자본 요건이 얼마인가요?"
+응답:
+{{
+    "intent": "대부업 등록요건 중 자기자본 기준 확인",
+    "legal_issues": ["대부업 등록요건", "자기자본 산정기준", "매입채권추심업 자본요건"],
+    "law_names": ["대부업법", "대부업법 시행령"],
+    "keywords": ["대부업", "자기자본", "등록요건", "매입채권추심업"],
+    "search_queries": ["대부업법 자기자본", "대부업 등록요건", "대부업법 시행령 자본", "매입채권추심업 등록", "대부업 자본금"],
+    "search_priority": {{
+        "laws": true,
+        "precedents": false,
+        "interpretations": true,
+        "committee_decisions": false,
+        "ministry_opinions": true
+    }},
+    "recommended_sources": ["law", "expc", "admrul"]
+}}
 """
 
             response = client.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-5.1",
                 messages=[
                     {"role": "system", "content": "당신은 한국 법률 검색 전문가입니다. JSON 형식으로만 응답합니다."},
                     {"role": "user", "content": prompt}
@@ -445,11 +501,17 @@ class LegalAIEngine:
 
                 # 필수 필드 확인 및 보정
                 if 'search_queries' not in result or not result['search_queries']:
-                    result['search_queries'] = result.get('keywords', basic_keywords)[:3]
+                    result['search_queries'] = result.get('keywords', basic_keywords)[:5]
                 if 'keywords' not in result or not result['keywords']:
                     result['keywords'] = basic_keywords
+                if 'legal_issues' not in result:
+                    result['legal_issues'] = []
+                if 'search_priority' not in result:
+                    result['search_priority'] = default_result['search_priority']
+                if 'recommended_sources' not in result:
+                    result['recommended_sources'] = default_result['recommended_sources']
 
-                logger.info(f"AI 의도 분석 결과: {result}")
+                logger.info(f"AI 의도 분석 결과: intent={result.get('intent')}, queries={result.get('search_queries')}")
                 return result
 
             except (json.JSONDecodeError, ValueError) as e:
@@ -675,7 +737,13 @@ class LegalAIEngine:
 
     async def comprehensive_search(self, query: str,
                                   search_options: Dict = None) -> Dict:
-        """종합 법률 검색 - AI 의도 분석 기반 검색"""
+        """종합 법률 검색 - AI 의도 분석 기반 검색
+
+        AI가 사용자 질의를 분석하여:
+        1. 법적 쟁점 파악
+        2. 관련 법령, 판례, 유권해석 검색어 생성
+        3. 최적의 검색 소스 추천
+        """
         if search_options is None:
             search_options = {
                 'basic': True,
@@ -689,16 +757,25 @@ class LegalAIEngine:
         keywords = ai_analysis.get('keywords', [])
         search_queries = ai_analysis.get('search_queries', [query])
         law_names = ai_analysis.get('law_names', [])
+        legal_issues = ai_analysis.get('legal_issues', [])
+        search_priority = ai_analysis.get('search_priority', {})
+        recommended_sources = ai_analysis.get('recommended_sources', [])
 
-        logger.info(f"AI 의도 분석: {ai_analysis.get('intent', '알 수 없음')}")
+        logger.info(f"=== AI 법률 검토 분석 결과 ===")
+        logger.info(f"의도: {ai_analysis.get('intent', '알 수 없음')}")
+        logger.info(f"법적 쟁점: {legal_issues}")
+        logger.info(f"관련 법령: {law_names}")
         logger.info(f"검색 키워드: {keywords}")
-        logger.info(f"검색 쿼리: {search_queries}")
+        logger.info(f"생성된 검색 쿼리: {search_queries}")
+        logger.info(f"추천 검색 소스: {recommended_sources}")
 
         results = {
             'query': query,
             'keywords': keywords,
             'search_queries': search_queries,
             'ai_analysis': ai_analysis,
+            'legal_issues': legal_issues,
+            'law_names': law_names,
             'search_time': datetime.now().isoformat(),
             'basic': {},
             'committees': {},
@@ -708,6 +785,8 @@ class LegalAIEngine:
 
         # AI가 생성한 검색 쿼리 사용 (없으면 원본 쿼리 사용)
         primary_query = search_queries[0] if search_queries else query
+        # 추가 검색어도 활용 (최대 3개)
+        additional_queries = search_queries[1:4] if len(search_queries) > 1 else []
 
         tasks = []
 
@@ -715,12 +794,12 @@ class LegalAIEngine:
         if search_options.get('basic', True):
             tasks.append(('basic', self.search_basic_legal_data(primary_query, search_queries)))
 
-        # 위원회 결정문 검색
+        # 위원회 결정문 검색 (AI가 추천하거나 사용자가 선택한 경우)
         committees = search_options.get('committees', [])
         if committees:
             tasks.append(('committees', self.search_committee_decisions(primary_query, committees)))
 
-        # 부처별 법령해석 검색
+        # 부처별 법령해석 검색 (AI가 추천하거나 사용자가 선택한 경우)
         ministries = search_options.get('ministries', [])
         if ministries:
             tasks.append(('ministries', self.search_ministry_interpretations(primary_query, ministries)))
@@ -1189,7 +1268,7 @@ AI 분석을 이용하시려면 사이드바에서 OpenAI API 키를 입력해�
             if not client:
                 return "AI 응답을 생성할 수 없습니다. OpenAI API 키를 확인해주세요."
             response = client.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-5.1",
                 messages=[
                     {"role": "system", "content": AI_LAWYER_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
@@ -1303,7 +1382,7 @@ AI 분석을 이용하시려면 사이드바에서 OpenAI API 키를 입력해�
             if not client:
                 return self._generate_fallback_response(query, legal_data)
             response = client.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-5.1",
                 messages=[
                     {"role": "system", "content": AI_LAWYER_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
@@ -1417,7 +1496,7 @@ AI 분석을 이용하시려면 사이드바에서 OpenAI API 키를 입력해�
             if not client:
                 return self._generate_fallback_response(query, legal_data)
             response = client.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-5.1",
                 messages=[
                     {"role": "system", "content": AI_LAWYER_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
@@ -1732,6 +1811,30 @@ async def process_search(query: str, search_options: Dict):
             st.warning("⚠️ 검색 결과가 없습니다. 다른 검색어로 시도해보세요.")
             progress.progress(50, "검색 결과 없음")
 
+        # AI 분석 결과 표시
+        ai_analysis = legal_data.get('ai_analysis', {})
+        if ai_analysis and ai_analysis.get('intent'):
+            with st.expander("🤖 AI 질의 분석 결과", expanded=True):
+                # 의도 분석
+                st.markdown(f"**📌 분석된 의도:** {ai_analysis.get('intent', '알 수 없음')}")
+
+                # 법적 쟁점
+                legal_issues = ai_analysis.get('legal_issues', [])
+                if legal_issues:
+                    st.markdown("**⚖️ 파악된 법적 쟁점:**")
+                    for issue in legal_issues:
+                        st.markdown(f"  - {issue}")
+
+                # 관련 법령
+                law_names = ai_analysis.get('law_names', [])
+                if law_names:
+                    st.markdown(f"**📚 관련 법령:** {', '.join(law_names)}")
+
+                # 검색 키워드
+                search_queries = ai_analysis.get('search_queries', [])
+                if search_queries:
+                    st.markdown(f"**🔍 생성된 검색어:** {', '.join(search_queries)}")
+
         # 2. 사실관계 정리
         progress.progress(60, "검색 결과 분석 중...")
         fact_sheet = engine.create_fact_sheet(query, legal_data)
@@ -1979,54 +2082,74 @@ def main():
         engine = LegalAIEngine()
 
         # 기본 데이터 검색
-        search_basic = st.checkbox("기본 법률 데이터", value=True,
+        search_basic = st.checkbox("📚 기본 법률 데이터", value=True,
                                    help="법령, 판례, 행정규칙, 자치법규, 헌재결정례, 법령해석례, 행정심판례, 조약")
 
-        # 위원회 결정문
-        with st.expander("위원회 결정문"):
-            select_all_comm = st.checkbox("전체 선택", key="select_all_comm")
-            col1, col2 = st.columns(2)
-            committees_list = list(engine.committee_targets.items())
-            half = len(committees_list) // 2
+        # 위원회 결정문 - 전체 선택 바깥에 배치
+        select_all_comm = st.checkbox("🏢 위원회 결정문 (전체)", key="select_all_comm",
+                                      help="공정거래위, 노동위, 금융위 등 12개 위원회")
+        if not select_all_comm:
+            with st.expander("위원회 개별 선택", expanded=False):
+                col1, col2 = st.columns(2)
+                committees_list = list(engine.committee_targets.items())
+                half = len(committees_list) // 2
+                with col1:
+                    for key, info in committees_list[:half]:
+                        st.checkbox(info['name'], key=f"comm_{key}")
+                with col2:
+                    for key, info in committees_list[half:]:
+                        st.checkbox(info['name'], key=f"comm_{key}")
 
-            with col1:
-                for key, info in committees_list[:half]:
-                    st.checkbox(info['name'], value=select_all_comm, key=f"comm_{key}")
-            with col2:
-                for key, info in committees_list[half:]:
-                    st.checkbox(info['name'], value=select_all_comm, key=f"comm_{key}")
+        # 부처별 법령해석 - 전체 선택 바깥에 배치
+        select_all_ministry = st.checkbox("🏛️ 부처별 법령해석 (전체)", key="select_all_ministry",
+                                          help="고용노동부, 국토부, 법제처 등 30개 부처")
 
-        # 부처별 법령해석 (주요)
-        major_ministries = [
-            ('moelCgmExpc', '고용노동부'),
-            ('molitCgmExpc', '국토교통부'),
-            ('moisCgmExpc', '행정안전부'),
-            ('mohwCgmExpc', '보건복지부'),
-            ('molegCgmExpc', '법제처'),
-            ('mojCgmExpc', '법무부'),
-        ]
+        if not select_all_ministry:
+            # 부처별 법령해석 (주요)
+            major_ministries = [
+                ('moelCgmExpc', '고용노동부'),
+                ('molitCgmExpc', '국토교통부'),
+                ('moisCgmExpc', '행정안전부'),
+                ('mohwCgmExpc', '보건복지부'),
+                ('molegCgmExpc', '법제처'),
+                ('mojCgmExpc', '법무부'),
+            ]
 
-        with st.expander("부처별 법령해석 (주요)"):
-            select_all_major_min = st.checkbox("전체 선택 (주요 부처)", key="select_all_major_min")
-            for key, name in major_ministries:
-                st.checkbox(name, value=select_all_major_min, key=f"min_{key}")
+            select_all_major_min = st.checkbox("  └ 주요 부처 (6개)", key="select_all_major_min")
+            if not select_all_major_min:
+                with st.expander("주요 부처 개별 선택", expanded=False):
+                    for key, name in major_ministries:
+                        st.checkbox(name, key=f"min_{key}")
 
-        # 부처별 법령해석 (기타)
-        other_ministries = [(k, v['name']) for k, v in engine.ministry_targets.items()
-                           if k not in [m[0] for m in major_ministries]]
+            # 부처별 법령해석 (기타)
+            other_ministries = [(k, v['name']) for k, v in engine.ministry_targets.items()
+                               if k not in [m[0] for m in major_ministries]]
 
-        with st.expander("부처별 법령해석 (기타)"):
-            select_all_other_min = st.checkbox("전체 선택 (기타 부처)", key="select_all_other_min")
-            col1, col2 = st.columns(2)
-            for idx, (key, name) in enumerate(other_ministries):
-                with col1 if idx % 2 == 0 else col2:
-                    st.checkbox(name, value=select_all_other_min, key=f"min_{key}")
+            select_all_other_min = st.checkbox("  └ 기타 부처", key="select_all_other_min")
+            if not select_all_other_min:
+                with st.expander("기타 부처 개별 선택", expanded=False):
+                    col1, col2 = st.columns(2)
+                    for idx, (key, name) in enumerate(other_ministries):
+                        with col1 if idx % 2 == 0 else col2:
+                            st.checkbox(name, key=f"min_{key}")
+        else:
+            # 전체 선택 시 major_ministries 변수 정의 필요
+            major_ministries = [
+                ('moelCgmExpc', '고용노동부'),
+                ('molitCgmExpc', '국토교통부'),
+                ('moisCgmExpc', '행정안전부'),
+                ('mohwCgmExpc', '보건복지부'),
+                ('molegCgmExpc', '법제처'),
+                ('mojCgmExpc', '법무부'),
+            ]
+            other_ministries = [(k, v['name']) for k, v in engine.ministry_targets.items()
+                               if k not in [m[0] for m in major_ministries]]
 
         # 특별행정심판례
         search_special_tribunals = st.checkbox(
-            "특별행정심판례",
+            "⚖️ 특별행정심판례",
             value=False,
-            help="조세심판원, 해양안전심판원, 국민권익위원회, 인사혁신처 소청심사위원회"
+            help="조세심판원, 해양안전심판원, 국민권익위원회, 소청심사위원회"
         )
 
         st.divider()
@@ -2123,7 +2246,7 @@ def main():
                 # 세션 상태에서 선택된 위원회 수집
                 engine_for_options = LegalAIEngine()
 
-                # 전체 선택 체크 시 모든 위원회 선택
+                # 위원회 전체 선택 체크 시 모든 위원회 선택
                 if st.session_state.get("select_all_comm", False):
                     selected_committees = list(engine_for_options.committee_targets.keys())
                 else:
@@ -2135,28 +2258,32 @@ def main():
                 # 세션 상태에서 선택된 부처 수집
                 major_ministry_keys = ['moelCgmExpc', 'molitCgmExpc', 'moisCgmExpc',
                                        'mohwCgmExpc', 'molegCgmExpc', 'mojCgmExpc']
+                other_ministry_keys = [k for k in engine_for_options.ministry_targets.keys()
+                                       if k not in major_ministry_keys]
 
                 selected_ministries = []
 
-                # 주요 부처 전체 선택 체크 시
-                if st.session_state.get("select_all_major_min", False):
-                    selected_ministries.extend(major_ministry_keys)
+                # 부처 전체 선택 체크 시 모든 부처 선택
+                if st.session_state.get("select_all_ministry", False):
+                    selected_ministries = list(engine_for_options.ministry_targets.keys())
                 else:
-                    selected_ministries.extend([
-                        key for key in major_ministry_keys
-                        if st.session_state.get(f"min_{key}", False)
-                    ])
+                    # 주요 부처 전체 선택 체크 시
+                    if st.session_state.get("select_all_major_min", False):
+                        selected_ministries.extend(major_ministry_keys)
+                    else:
+                        selected_ministries.extend([
+                            key for key in major_ministry_keys
+                            if st.session_state.get(f"min_{key}", False)
+                        ])
 
-                # 기타 부처 전체 선택 체크 시
-                other_ministry_keys = [k for k in engine_for_options.ministry_targets.keys()
-                                       if k not in major_ministry_keys]
-                if st.session_state.get("select_all_other_min", False):
-                    selected_ministries.extend(other_ministry_keys)
-                else:
-                    selected_ministries.extend([
-                        key for key in other_ministry_keys
-                        if st.session_state.get(f"min_{key}", False)
-                    ])
+                    # 기타 부처 전체 선택 체크 시
+                    if st.session_state.get("select_all_other_min", False):
+                        selected_ministries.extend(other_ministry_keys)
+                    else:
+                        selected_ministries.extend([
+                            key for key in other_ministry_keys
+                            if st.session_state.get(f"min_{key}", False)
+                        ])
 
                 # 검색 옵션 구성
                 search_options = {
