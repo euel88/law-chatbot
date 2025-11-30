@@ -2004,16 +2004,41 @@ def main():
             else:
                 # 세션 상태에서 선택된 위원회 수집
                 engine_for_options = LegalAIEngine()
-                selected_committees = [
-                    key for key in engine_for_options.committee_targets.keys()
-                    if st.session_state.get(f"comm_{key}", False)
-                ]
+
+                # 전체 선택 체크 시 모든 위원회 선택
+                if st.session_state.get("select_all_comm", False):
+                    selected_committees = list(engine_for_options.committee_targets.keys())
+                else:
+                    selected_committees = [
+                        key for key in engine_for_options.committee_targets.keys()
+                        if st.session_state.get(f"comm_{key}", False)
+                    ]
 
                 # 세션 상태에서 선택된 부처 수집
-                selected_ministries = [
-                    key for key in engine_for_options.ministry_targets.keys()
-                    if st.session_state.get(f"min_{key}", False)
-                ]
+                major_ministry_keys = ['moelCgmExpc', 'molitCgmExpc', 'moisCgmExpc',
+                                       'mohwCgmExpc', 'molegCgmExpc', 'mojCgmExpc']
+
+                selected_ministries = []
+
+                # 주요 부처 전체 선택 체크 시
+                if st.session_state.get("select_all_major_min", False):
+                    selected_ministries.extend(major_ministry_keys)
+                else:
+                    selected_ministries.extend([
+                        key for key in major_ministry_keys
+                        if st.session_state.get(f"min_{key}", False)
+                    ])
+
+                # 기타 부처 전체 선택 체크 시
+                other_ministry_keys = [k for k in engine_for_options.ministry_targets.keys()
+                                       if k not in major_ministry_keys]
+                if st.session_state.get("select_all_other_min", False):
+                    selected_ministries.extend(other_ministry_keys)
+                else:
+                    selected_ministries.extend([
+                        key for key in other_ministry_keys
+                        if st.session_state.get(f"min_{key}", False)
+                    ])
 
                 # 검색 옵션 구성
                 search_options = {
