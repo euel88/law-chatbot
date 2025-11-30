@@ -302,6 +302,219 @@ class LegalAIEngine:
             'adapSpecialDecc': {'name': '인사혁신처 소청심사위원회 재결례', 'key': 'adapSpecialDecc'},
         }
 
+        # 사건번호/안건번호 패턴 정규식
+        # 판례 사건번호 패턴: 2020다12345, 2021구합12345, 2019노1234 등
+        self.prec_case_pattern = re.compile(
+            r'(\d{2,4})[\s]*'  # 연도 (2자리 또는 4자리)
+            r'([가-힣]{1,4})'  # 사건유형 (다, 구합, 노, 가합 등)
+            r'[\s]*(\d+)'  # 사건번호
+            r'(?:,?\s*(\d+))?'  # 병합사건 (선택)
+        )
+
+        # 법령해석례 안건번호 패턴: 18-0701, 22-0123, 2018-0701 등
+        self.expc_case_pattern = re.compile(
+            r'(\d{2,4})'  # 연도 (2자리 또는 4자리)
+            r'[-\s]?'  # 구분자
+            r'(\d{3,5})'  # 안건번호
+        )
+
+    def detect_case_number(self, query: str) -> Dict[str, Any]:
+        """사용자 입력에서 사건번호/안건번호 패턴 감지
+
+        Returns:
+            Dict with keys:
+                - 'type': 'prec' (판례), 'expc' (법령해석례), 'decc' (행정심판례), or None
+                - 'case_numbers': 감지된 사건번호 리스트
+                - 'formatted': API용 포맷된 사건번호
+        """
+        result = {
+            'type': None,
+            'case_numbers': [],
+            'formatted': None,
+            'original': query
+        }
+
+        query_clean = query.strip()
+
+        # 1. 판례 사건번호 패턴 검사 (예: 2020다12345, 2021구합12345)
+        prec_matches = self.prec_case_pattern.findall(query_clean)
+        if prec_matches:
+            case_numbers = []
+            for match in prec_matches:
+                year, case_type, number, merged = match
+                # 2자리 연도를 4자리로 변환
+                if len(year) == 2:
+                    year = '20' + year if int(year) < 50 else '19' + year
+                case_no = f"{year}{case_type}{number}"
+                if merged:
+                    case_no += f",{merged}"
+                case_numbers.append(case_no)
+
+            if case_numbers:
+                result['type'] = 'prec'
+                result['case_numbers'] = case_numbers
+                # API용 nb 파라미터 형식
+                result['formatted'] = ','.join(case_numbers)
+                return result
+
+        # 2. 법령해석례 안건번호 패턴 검사 (예: 18-0701, 22-0123)
+        # 패턴: XX-XXXX 형식 (하이픈 포함)
+        expc_pattern_strict = re.compile(r'(\d{2,4})-(\d{3,5})')
+        expc_matches = expc_pattern_strict.findall(query_clean)
+        if expc_matches:
+            case_numbers = []
+            formatted_numbers = []
+            for year, number in expc_matches:
+                # 원본 형식 유지
+                original = f"{year}-{number}"
+                case_numbers.append(original)
+                # API용 itmno 파라미터 형식 (하이픈 제거)
+                formatted_numbers.append(f"{year}{number}")
+
+            if case_numbers:
+                result['type'] = 'expc'
+                result['case_numbers'] = case_numbers
+                # 법령해석례는 하이픈 제거한 형식
+                result['formatted'] = formatted_numbers[0]  # 첫 번째만
+                return result
+
+        # 3. 행정심판례 패턴 - 일반적으로 "중행심 XXXX-XXXXX" 형식
+        # 또는 "XXXX-XXXXX" 형식의 숫자만 있는 경우
+        decc_pattern = re.compile(r'(\d{4})-(\d{4,6})')
+        decc_matches = decc_pattern.findall(query_clean)
+        if decc_matches and not expc_matches:  # expc와 구분
+            case_numbers = [f"{year}-{number}" for year, number in decc_matches]
+            result['type'] = 'decc'
+            result['case_numbers'] = case_numbers
+            result['formatted'] = case_numbers[0]
+            return result
+
+        return result
+
+    async def search_by_case_number(self, case_info: Dict[str, Any]) -> Dict:
+        """사건번호/안건번호로 직접 검색
+
+        Args:
+            case_info: detect_case_number()의 반환값
+
+        Returns:
+            검색 결과 Dict
+        """
+        if not case_info.get('type') or not case_info.get('formatted'):
+            return {}
+
+        case_type = case_info['type']
+        formatted = case_info['formatted']
+        api_key = self.law_api_key or get_law_api_key()
+
+        if not api_key:
+            logger.warning("법제처 API 키가 없습니다.")
+            return {}
+
+        results = {case_type: []}
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                if case_type == 'prec':
+                    # 판례: nb 파라미터로 사건번호 검색
+                    params = {
+                        'OC': api_key,
+                        'target': 'prec',
+                        'type': 'JSON',
+                        'nb': formatted,  # 사건번호
+                        'display': 20
+                    }
+                    logger.info(f"판례 사건번호 검색: nb={formatted}")
+
+                elif case_type == 'expc':
+                    # 법령해석례: itmno 파라미터로 안건번호 검색
+                    params = {
+                        'OC': api_key,
+                        'target': 'expc',
+                        'type': 'JSON',
+                        'itmno': formatted,  # 안건번호 (하이픈 제거)
+                        'display': 20
+                    }
+                    logger.info(f"법령해석례 안건번호 검색: itmno={formatted}")
+
+                elif case_type == 'decc':
+                    # 행정심판례: query로 사건번호 검색 (직접 파라미터 없음)
+                    params = {
+                        'OC': api_key,
+                        'target': 'decc',
+                        'type': 'JSON',
+                        'query': case_info['case_numbers'][0],  # 사건번호로 검색
+                        'display': 20
+                    }
+                    logger.info(f"행정심판례 사건번호 검색: query={case_info['case_numbers'][0]}")
+                else:
+                    return {}
+
+                async with session.get(
+                    self.api_endpoints['search'],
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as response:
+                    if response.status == 200:
+                        text = await response.text()
+                        try:
+                            data = json.loads(text)
+                            logger.info(f"[{case_type}] 사건번호 검색 응답: {list(data.keys())}")
+
+                            # 결과 추출
+                            items = self._extract_search_results(data, case_type)
+                            results[case_type] = items
+                            logger.info(f"[{case_type}] 사건번호 검색 결과: {len(items)}건")
+
+                        except json.JSONDecodeError as e:
+                            logger.error(f"사건번호 검색 JSON 파싱 오류: {e}")
+                    else:
+                        logger.error(f"사건번호 검색 API 오류: {response.status}")
+
+        except Exception as e:
+            logger.error(f"사건번호 검색 오류: {e}")
+
+        return results
+
+    def _extract_search_results(self, data: Dict, target: str) -> List[Dict]:
+        """API 응답에서 검색 결과 배열 추출"""
+        results = []
+
+        # API 응답 구조에서 실제 데이터 찾기
+        wrapper_keys = [
+            f'{target.capitalize()}Search',
+            target.capitalize(),
+            f'{target.upper()}Search',
+            target,
+            target.lower(),
+            target.upper(),
+        ]
+
+        inner_data = data
+        for wkey in wrapper_keys:
+            if wkey in data and isinstance(data[wkey], dict):
+                inner_data = data[wkey]
+                break
+            elif wkey in data and isinstance(data[wkey], list):
+                return data[wkey]
+
+        if isinstance(inner_data, dict):
+            data_keys = [target.lower(), target, target.capitalize()]
+            for dkey in data_keys:
+                if dkey in inner_data:
+                    value = inner_data[dkey]
+                    if isinstance(value, list) and len(value) > 0:
+                        return value
+
+            # 첫 번째 리스트 찾기
+            skip_keys = {'totalCnt', 'page', 'target', 'section', '키워드',
+                        'resultMsg', 'resultCode', 'numOfRows'}
+            for key, value in inner_data.items():
+                if key not in skip_keys and isinstance(value, list) and len(value) > 0:
+                    return value
+
+        return results
+
     def extract_keywords(self, user_input: str) -> List[str]:
         """사용자 입력에서 법률 관련 핵심 키워드 추출 - 법률명/조문 우선"""
         # 불용어 정의 (일반적인 단어, 조사, 구어체 표현 등)
@@ -921,12 +1134,14 @@ class LegalAIEngine:
 
     async def comprehensive_search(self, query: str,
                                   search_options: Dict = None) -> Dict:
-        """종합 법률 검색 - AI 의도 분석 기반 검색
+        """종합 법률 검색 - AI 의도 분석 기반 검색 + 사건번호 직접 검색
 
         AI가 사용자 질의를 분석하여:
         1. 법적 쟁점 파악
         2. 관련 법령, 판례, 유권해석 검색어 생성
         3. 최적의 검색 소스 추천
+
+        사건번호/안건번호가 감지되면 직접 검색도 수행
         """
         if search_options is None:
             search_options = {
@@ -936,7 +1151,18 @@ class LegalAIEngine:
                 'special_tribunals': True
             }
 
-        # AI를 사용하여 질의 의도 분석 및 검색 키워드 생성
+        # 1. 사건번호/안건번호 패턴 감지
+        case_info = self.detect_case_number(query)
+        case_number_results = {}
+
+        if case_info.get('type'):
+            logger.info(f"=== 사건번호/안건번호 감지 ===")
+            logger.info(f"유형: {case_info['type']}, 번호: {case_info['case_numbers']}")
+            # 사건번호로 직접 검색
+            case_number_results = await self.search_by_case_number(case_info)
+            logger.info(f"사건번호 검색 결과: {sum(len(v) for v in case_number_results.values())}건")
+
+        # 2. AI를 사용하여 질의 의도 분석 및 검색 키워드 생성
         ai_analysis = self.analyze_query_with_ai(query)
         keywords = ai_analysis.get('keywords', [])
         search_queries = ai_analysis.get('search_queries', [query])
@@ -961,6 +1187,7 @@ class LegalAIEngine:
             'legal_issues': legal_issues,
             'law_names': law_names,
             'search_time': datetime.now().isoformat(),
+            'case_info': case_info,  # 사건번호 정보 추가
             'basic': {},
             'committees': {},
             'ministries': {},
@@ -999,6 +1226,30 @@ class LegalAIEngine:
             except Exception as e:
                 logger.error(f"검색 오류 ({key}): {e}")
                 results[key] = {}
+
+        # 사건번호 검색 결과를 basic에 병합 (중복 제거)
+        if case_number_results:
+            for case_type, items in case_number_results.items():
+                if items:
+                    if case_type not in results['basic']:
+                        results['basic'][case_type] = []
+                    # 기존 결과와 병합 (사건번호 검색 결과 우선)
+                    existing_ids = set()
+                    for item in results['basic'][case_type]:
+                        item_id = item.get('판례일련번호', item.get('법령해석례일련번호',
+                                  item.get('행정심판재결례일련번호', '')))
+                        if item_id:
+                            existing_ids.add(str(item_id))
+
+                    for item in items:
+                        item_id = item.get('판례일련번호', item.get('법령해석례일련번호',
+                                  item.get('행정심판재결례일련번호', '')))
+                        if not item_id or str(item_id) not in existing_ids:
+                            results['basic'][case_type].insert(0, item)  # 앞에 추가
+                            if item_id:
+                                existing_ids.add(str(item_id))
+
+                    logger.info(f"[{case_type}] 사건번호 검색 결과 {len(items)}건 병합 완료")
 
         # AI를 사용하여 검색 결과 검증 및 필터링
         logger.info("=== AI 검색 결과 검증 시작 ===")
@@ -1172,8 +1423,14 @@ class LegalAIEngine:
         'prec', 'expc', 'decc', 'detc', 'law', 'eflaw', 'admrul', 'ordin', 'trty'
     }
 
-    def _is_valid_value(self, value, query: str = '') -> bool:
-        """유효한 데이터 값인지 확인"""
+    def _is_valid_value(self, value, query: str = '', exclude_urls: bool = True) -> bool:
+        """유효한 데이터 값인지 확인
+
+        Args:
+            value: 검사할 값
+            query: 현재 검색어 (중복 제외용)
+            exclude_urls: URL 형식 값 제외 여부 (기본: True)
+        """
         if not value:
             return False
 
@@ -1188,6 +1445,18 @@ class LegalAIEngine:
         # SKIP_VALUES 체크
         if val_lower in self.SKIP_VALUES:
             return False
+
+        # URL 형식 값 제외 (상세링크 등)
+        if exclude_urls:
+            # 법제처 API 상세링크 패턴: /DRF/lawService.do?... 형식
+            if val_str.startswith('/DRF/') or val_str.startswith('http'):
+                return False
+            # lawService.do, lawSearch.do 등 API 엔드포인트 패턴
+            if 'lawService.do' in val_str or 'lawSearch.do' in val_str:
+                return False
+            # URL 파라미터 패턴: OC=, target=, ID= 등이 포함된 경우
+            if re.search(r'[?&](OC|target|ID|type)=', val_str):
+                return False
 
         # 검색어와 동일한 값은 제외 (에코된 검색어)
         if query:
@@ -1246,13 +1515,13 @@ class LegalAIEngine:
         return default
 
     def _get_item_display(self, item: Dict, *preferred_keys, query: str = '') -> str:
-        """아이템 표시용 문자열 반환"""
+        """아이템 표시용 문자열 반환 - 안건명/사건명 우선, URL 제외"""
         if not isinstance(item, dict):
             if item and self._is_valid_value(item, query):
                 return str(item)
             return '(정보 없음)'
 
-        # 1. 우선 키에서 찾기
+        # 1. 우선 키에서 찾기 (안건명, 사건명, 제목 등)
         all_keys = list(preferred_keys)
         for key in preferred_keys:
             if key in self.FIELD_MAPPING:
@@ -1267,11 +1536,31 @@ class LegalAIEngine:
                 if self._is_valid_value(val, query):
                     return str(val)
 
-        # 2. 유효한 값들 수집
-        skip_keys = {'target', 'type', 'id', 'page', 'totalcnt', 'section', 'success'}
+        # 2. 명칭/이름 관련 키 추가 탐색
+        name_keys = ['안건명', '사건명', '제목', '판례명', '결정명', '재결례명',
+                     '법령명', '법령명한글', '행정규칙명', '자치법규명', '조약명',
+                     'caseName', 'title', 'lawName', 'evtNm', 'itmNm', 'caseNm']
+        for key in name_keys:
+            if key in item and key not in all_keys:
+                val = item[key]
+                if self._is_valid_value(val, query):
+                    return str(val)
+
+        # 3. 유효한 값들 수집 (URL/상세링크 관련 키 제외)
+        skip_keys = {
+            'target', 'type', 'id', 'page', 'totalcnt', 'section', 'success',
+            # 상세링크 관련 키 제외
+            '판례상세링크', '법령해석례상세링크', '행정심판례상세링크', '헌재결정례상세링크',
+            '상세링크', 'detailLink', 'link', 'url',
+            # API 메타데이터
+            'oc', 'display', 'sort', 'query', 'keyword', '키워드'
+        }
         valid_parts = []
         for key, value in item.items():
             if key.lower() not in skip_keys and self._is_valid_value(value, query):
+                # 상세링크 키인지 추가 확인
+                if '상세링크' in key or '링크' in key or 'link' in key.lower():
+                    continue
                 valid_parts.append(str(value))
 
         return " | ".join(valid_parts[:3]) if valid_parts else '(정보 없음)'
@@ -2036,6 +2325,17 @@ async def process_search(query: str, search_options: Dict):
             st.warning("⚠️ 검색 결과가 없습니다. 다른 검색어로 시도해보세요.")
             progress.progress(50, "검색 결과 없음")
 
+        # 사건번호 검색 결과 표시
+        case_info = legal_data.get('case_info', {})
+        if case_info and case_info.get('type'):
+            case_type_names = {
+                'prec': '판례',
+                'expc': '법령해석례',
+                'decc': '행정심판례'
+            }
+            case_type_name = case_type_names.get(case_info['type'], case_info['type'])
+            st.info(f"🔢 **사건번호 감지:** {', '.join(case_info['case_numbers'])} ({case_type_name})")
+
         # AI 분석 결과 표시
         ai_analysis = legal_data.get('ai_analysis', {})
         if ai_analysis and ai_analysis.get('intent'):
@@ -2423,10 +2723,15 @@ def main():
                 • <b>부처별 법령해석:</b> 고용노동부, 국토교통부 등 30개 이상 부처<br>
                 • <b>특별행정심판:</b> 조세심판원, 해양안전심판원 등<br><br>
 
+                <b>🔢 사건번호/안건번호 직접 검색:</b><br>
+                • <b>판례:</b> 2020다12345, 2021구합12345 형식<br>
+                • <b>법령해석례:</b> 18-0701, 22-0123 형식<br>
+                • <b>행정심판례:</b> 2023-12345 형식<br><br>
+
                 <b>💡 사용 방법:</b><br>
                 1. 사이드바에서 API 키를 입력하세요<br>
                 2. 검색할 데이터 소스를 선택하세요<br>
-                3. 아래 입력창에 검색어를 입력하세요<br><br>
+                3. 아래 입력창에 검색어 또는 사건번호를 입력하세요<br><br>
 
                 어떤 법률 자료를 찾아드릴까요?
             </div>
@@ -2440,17 +2745,18 @@ def main():
 
         # 예시 검색어
         st.markdown("### 💡 예시 검색어")
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
 
         examples = {
             "부당해고 구제": "부당해고 구제 절차와 관련 판례",
             "임대차 보증금": "주택임대차보호법 보증금 반환",
-            "개인정보 침해": "개인정보 침해 손해배상"
+            "개인정보 침해": "개인정보 침해 손해배상",
+            "18-0701": "18-0701"  # 법령해석례 안건번호 예시
         }
 
         clicked_example = None
         for idx, (btn_text, query) in enumerate(examples.items()):
-            with [col1, col2, col3][idx]:
+            with [col1, col2, col3, col4][idx]:
                 if st.button(btn_text, use_container_width=True, key=f"example_{idx}"):
                     clicked_example = query
 
