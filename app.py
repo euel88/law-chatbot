@@ -1010,7 +1010,7 @@ AI 분석을 이용하시려면 사이드바에서 OpenAI API 키를 입력해�
 
         try:
             response = openai_client.chat.completions.create(
-                model="gpt-4",
+                model="gpt-5",
                 messages=[
                     {"role": "system", "content": AI_LAWYER_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
@@ -1446,7 +1446,7 @@ def main():
             st.error("❌ 법제처 API 키 필요")
             st.caption("검색 기능을 사용하려면 법제처 API 키가 필요합니다.")
 
-        if OPENAI_API_KEY:
+        if openai_key:
             st.success("✅ GPT-5 AI 엔진 활성화")
         else:
             st.warning("⚠️ OpenAI API 미설정")
