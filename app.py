@@ -1866,16 +1866,17 @@ def main():
 
         # 위원회 결정문
         with st.expander("위원회 결정문"):
+            select_all_comm = st.checkbox("전체 선택", key="select_all_comm")
             col1, col2 = st.columns(2)
             committees_list = list(engine.committee_targets.items())
             half = len(committees_list) // 2
 
             with col1:
                 for key, info in committees_list[:half]:
-                    st.checkbox(info['name'], key=f"comm_{key}")
+                    st.checkbox(info['name'], value=select_all_comm, key=f"comm_{key}")
             with col2:
                 for key, info in committees_list[half:]:
-                    st.checkbox(info['name'], key=f"comm_{key}")
+                    st.checkbox(info['name'], value=select_all_comm, key=f"comm_{key}")
 
         # 부처별 법령해석 (주요)
         major_ministries = [
@@ -1888,18 +1889,20 @@ def main():
         ]
 
         with st.expander("부처별 법령해석 (주요)"):
+            select_all_major_min = st.checkbox("전체 선택 (주요 부처)", key="select_all_major_min")
             for key, name in major_ministries:
-                st.checkbox(name, key=f"min_{key}")
+                st.checkbox(name, value=select_all_major_min, key=f"min_{key}")
 
         # 부처별 법령해석 (기타)
         other_ministries = [(k, v['name']) for k, v in engine.ministry_targets.items()
                            if k not in [m[0] for m in major_ministries]]
 
         with st.expander("부처별 법령해석 (기타)"):
+            select_all_other_min = st.checkbox("전체 선택 (기타 부처)", key="select_all_other_min")
             col1, col2 = st.columns(2)
             for idx, (key, name) in enumerate(other_ministries):
                 with col1 if idx % 2 == 0 else col2:
-                    st.checkbox(name, key=f"min_{key}")
+                    st.checkbox(name, value=select_all_other_min, key=f"min_{key}")
 
         # 특별행정심판례
         search_special_tribunals = st.checkbox(
