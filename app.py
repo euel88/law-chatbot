@@ -997,7 +997,7 @@ AI 분석을 이용하시려면 사이드바에서 OpenAI API 키를 입력해�
 
         try:
             response = openai_client.chat.completions.create(
-                model="gpt-4",
+                model="gpt-5",
                 messages=[
                     {"role": "system", "content": AI_LAWYER_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
