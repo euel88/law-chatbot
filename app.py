@@ -1378,15 +1378,21 @@ def display_search_results_detail(legal_data: Dict, engine: LegalAIEngine, query
     if basic.get('prec'):
         with st.expander(f"📚 검색된 판례 ({len(basic['prec'])}건)", expanded=True):
             for idx, prec in enumerate(basic['prec'][:20], 1):
-                # 먼저 _get_item_display로 시도
                 display_name = engine._get_item_display(prec, '사건명', '판례명', 'caseName', '제목', query=query)
                 case_no = engine._get_value(prec, '사건번호', 'caseNo', 'caseNumber', query=query)
                 court = engine._get_value(prec, '법원명', '법원', 'courtName', 'court', query=query)
                 date = engine._get_value(prec, '선고일자', '판결일자', 'judgmentDate', 'decisionDate', query=query)
+                detail_link = engine._get_value(prec, '판례상세링크', 'detailLink', query=query)
                 if display_name and display_name != '(정보 없음)':
-                    st.markdown(f"**{idx}. {display_name}**")
-                    if case_no or court or date:
-                        st.caption(f"사건번호: {case_no or '-'} | 법원: {court or '-'} | 선고일: {date or '-'}")
+                    col1, col2 = st.columns([5, 1])
+                    with col1:
+                        st.markdown(f"**{idx}. {display_name}**")
+                        if case_no or court or date:
+                            st.caption(f"사건번호: {case_no or '-'} | 법원: {court or '-'} | 선고일: {date or '-'}")
+                    with col2:
+                        if detail_link:
+                            full_link = f"https://www.law.go.kr{detail_link}" if detail_link.startswith('/') else detail_link
+                            st.markdown(f"[상세보기]({full_link})")
 
     # 법령해석례 상세
     if basic.get('expc'):
@@ -1396,10 +1402,17 @@ def display_search_results_detail(legal_data: Dict, engine: LegalAIEngine, query
                 no = engine._get_value(expc, '안건번호', 'caseNo', 'number', query=query)
                 org = engine._get_value(expc, '회신기관명', '회신기관', 'replyOrg', query=query)
                 date = engine._get_value(expc, '회신일자', 'replyDate', query=query)
+                detail_link = engine._get_value(expc, '법령해석례상세링크', 'detailLink', query=query)
                 if display_name and display_name != '(정보 없음)':
-                    st.markdown(f"**{idx}. {display_name}**")
-                    if no or org or date:
-                        st.caption(f"안건번호: {no or '-'} | 회신기관: {org or '-'} | 회신일: {date or '-'}")
+                    col1, col2 = st.columns([5, 1])
+                    with col1:
+                        st.markdown(f"**{idx}. {display_name}**")
+                        if no or org or date:
+                            st.caption(f"안건번호: {no or '-'} | 회신기관: {org or '-'} | 회신일: {date or '-'}")
+                    with col2:
+                        if detail_link:
+                            full_link = f"https://www.law.go.kr{detail_link}" if detail_link.startswith('/') else detail_link
+                            st.markdown(f"[상세보기]({full_link})")
 
     # 행정심판례 상세
     if basic.get('decc'):
@@ -1409,10 +1422,17 @@ def display_search_results_detail(legal_data: Dict, engine: LegalAIEngine, query
                 case_no = engine._get_value(decc, '사건번호', 'caseNo', 'caseNumber', query=query)
                 result = engine._get_value(decc, '재결결과', '재결구분명', 'result', query=query)
                 date = engine._get_value(decc, '의결일자', '재결일자', 'decisionDate', query=query)
+                detail_link = engine._get_value(decc, '행정심판례상세링크', 'detailLink', query=query)
                 if display_name and display_name != '(정보 없음)':
-                    st.markdown(f"**{idx}. {display_name}**")
-                    if case_no or result or date:
-                        st.caption(f"사건번호: {case_no or '-'} | 재결결과: {result or '-'} | 의결일: {date or '-'}")
+                    col1, col2 = st.columns([5, 1])
+                    with col1:
+                        st.markdown(f"**{idx}. {display_name}**")
+                        if case_no or result or date:
+                            st.caption(f"사건번호: {case_no or '-'} | 재결결과: {result or '-'} | 의결일: {date or '-'}")
+                    with col2:
+                        if detail_link:
+                            full_link = f"https://www.law.go.kr{detail_link}" if detail_link.startswith('/') else detail_link
+                            st.markdown(f"[상세보기]({full_link})")
 
     # 헌재결정례 상세
     if basic.get('detc'):
@@ -1421,9 +1441,97 @@ def display_search_results_detail(legal_data: Dict, engine: LegalAIEngine, query
                 display_name = engine._get_item_display(detc, '사건명', '결정명', 'caseName', '제목', query=query)
                 case_no = engine._get_value(detc, '사건번호', 'caseNo', 'caseNumber', query=query)
                 date = engine._get_value(detc, '종국일자', '선고일자', '결정일자', 'decisionDate', query=query)
+                detail_link = engine._get_value(detc, '헌재결정례상세링크', 'detailLink', query=query)
                 if display_name and display_name != '(정보 없음)':
-                    st.markdown(f"**{idx}. {display_name}**")
-                    st.caption(f"사건번호: {case_no or '-'} | 종국일: {date or '-'}")
+                    col1, col2 = st.columns([5, 1])
+                    with col1:
+                        st.markdown(f"**{idx}. {display_name}**")
+                        st.caption(f"사건번호: {case_no or '-'} | 종국일: {date or '-'}")
+                    with col2:
+                        if detail_link:
+                            full_link = f"https://www.law.go.kr{detail_link}" if detail_link.startswith('/') else detail_link
+                            st.markdown(f"[상세보기]({full_link})")
+
+    # 위원회 결정문 표시
+    committees = legal_data.get('committees', {})
+    if committees:
+        total_committee = sum(len(items) for items in committees.values() if items)
+        if total_committee > 0:
+            with st.expander(f"🏢 위원회 결정문 ({total_committee}건)", expanded=False):
+                for comm_key, items in committees.items():
+                    if items:
+                        comm_name = engine.committee_targets.get(comm_key, {}).get('name', comm_key)
+                        st.markdown(f"**{comm_name}** ({len(items)}건)")
+                        for idx, item in enumerate(items[:10], 1):
+                            display_name = engine._get_item_display(item, '사건명', '제목', 'caseName', 'title', query=query)
+                            case_no = engine._get_value(item, '사건번호', 'caseNo', query=query)
+                            date = engine._get_value(item, '의결일자', '결정일자', 'decisionDate', query=query)
+                            detail_link = engine._get_value(item, '상세링크', 'detailLink', query=query)
+                            if display_name and display_name != '(정보 없음)':
+                                col1, col2 = st.columns([5, 1])
+                                with col1:
+                                    st.markdown(f"{idx}. {display_name}")
+                                    if case_no or date:
+                                        st.caption(f"사건번호: {case_no or '-'} | 일자: {date or '-'}")
+                                with col2:
+                                    if detail_link:
+                                        full_link = f"https://www.law.go.kr{detail_link}" if detail_link.startswith('/') else detail_link
+                                        st.markdown(f"[상세]({full_link})")
+                        st.markdown("---")
+
+    # 부처별 법령해석 표시
+    ministries = legal_data.get('ministries', {})
+    if ministries:
+        total_ministry = sum(len(items) for items in ministries.values() if items)
+        if total_ministry > 0:
+            with st.expander(f"🏛️ 부처별 법령해석 ({total_ministry}건)", expanded=False):
+                for min_key, items in ministries.items():
+                    if items:
+                        min_name = engine.ministry_targets.get(min_key, {}).get('name', min_key)
+                        st.markdown(f"**{min_name}** ({len(items)}건)")
+                        for idx, item in enumerate(items[:10], 1):
+                            display_name = engine._get_item_display(item, '안건명', '제목', 'title', query=query)
+                            no = engine._get_value(item, '안건번호', 'caseNo', query=query)
+                            date = engine._get_value(item, '회신일자', 'replyDate', query=query)
+                            detail_link = engine._get_value(item, '법령해석례상세링크', 'detailLink', query=query)
+                            if display_name and display_name != '(정보 없음)':
+                                col1, col2 = st.columns([5, 1])
+                                with col1:
+                                    st.markdown(f"{idx}. {display_name}")
+                                    if no or date:
+                                        st.caption(f"안건번호: {no or '-'} | 회신일: {date or '-'}")
+                                with col2:
+                                    if detail_link:
+                                        full_link = f"https://www.law.go.kr{detail_link}" if detail_link.startswith('/') else detail_link
+                                        st.markdown(f"[상세]({full_link})")
+                        st.markdown("---")
+
+    # 특별행정심판례 표시
+    special_tribunals = legal_data.get('special_tribunals', {})
+    if special_tribunals:
+        total_tribunal = sum(len(items) for items in special_tribunals.values() if items)
+        if total_tribunal > 0:
+            with st.expander(f"⚖️ 특별행정심판례 ({total_tribunal}건)", expanded=False):
+                for trib_key, items in special_tribunals.items():
+                    if items:
+                        trib_name = engine.special_tribunal_targets.get(trib_key, {}).get('name', trib_key)
+                        st.markdown(f"**{trib_name}** ({len(items)}건)")
+                        for idx, item in enumerate(items[:10], 1):
+                            display_name = engine._get_item_display(item, '사건명', '제목', 'caseName', query=query)
+                            case_no = engine._get_value(item, '사건번호', 'caseNo', query=query)
+                            date = engine._get_value(item, '재결일자', '의결일자', 'decisionDate', query=query)
+                            detail_link = engine._get_value(item, '행정심판례상세링크', 'detailLink', query=query)
+                            if display_name and display_name != '(정보 없음)':
+                                col1, col2 = st.columns([5, 1])
+                                with col1:
+                                    st.markdown(f"{idx}. {display_name}")
+                                    if case_no or date:
+                                        st.caption(f"사건번호: {case_no or '-'} | 재결일: {date or '-'}")
+                                with col2:
+                                    if detail_link:
+                                        full_link = f"https://www.law.go.kr{detail_link}" if detail_link.startswith('/') else detail_link
+                                        st.markdown(f"[상세]({full_link})")
+                        st.markdown("---")
 
 def display_search_statistics(fact_sheet: Dict, engine: LegalAIEngine):
     """검색 결과 통계 표시"""
