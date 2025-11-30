@@ -385,34 +385,53 @@ class LegalAIEngine:
                         # 결과 추출 - 다양한 응답 형식 처리
                         results = []
 
-                        # 1. target 이름과 일치하는 키 확인
-                        possible_keys = [
+                        # API 응답 구조: {'PrecSearch': {'prec': [...], '키워드': '...'}}
+                        # 또는 {'Expc': {'expc': [...], ...}}
+
+                        # 1. 최상위 래퍼 키 확인 (PrecSearch, LawSearch, Expc, Decc 등)
+                        wrapper_keys = [
+                            f'{target.capitalize()}Search',  # PrecSearch, LawSearch
+                            target.capitalize(),  # Prec, Expc, Decc
+                            f'{target.upper()}Search',
                             target,
                             target.lower(),
                             target.upper(),
-                            target.replace('CgmExpc', ''),
-                            target.replace('SpecialDecc', ''),
                         ]
 
-                        for key in possible_keys:
-                            if key in data:
-                                value = data[key]
-                                if isinstance(value, list):
-                                    results = value
-                                elif isinstance(value, dict):
-                                    results = [value]
+                        inner_data = data
+                        for wkey in wrapper_keys:
+                            if wkey in data and isinstance(data[wkey], dict):
+                                inner_data = data[wkey]
+                                break
+                            elif wkey in data and isinstance(data[wkey], list):
+                                results = data[wkey]
                                 break
 
-                        # 2. 결과가 없으면 첫 번째 리스트 값 사용
-                        if not results:
-                            for key, value in data.items():
-                                if key not in ['totalCnt', 'page', 'target', 'section']:
+                        # 2. inner_data에서 실제 데이터 배열 추출
+                        if not results and isinstance(inner_data, dict):
+                            # target 이름과 일치하는 키에서 배열 찾기
+                            data_keys = [
+                                target.lower(),  # prec, expc, decc
+                                target,
+                                target.capitalize(),
+                            ]
+
+                            for dkey in data_keys:
+                                if dkey in inner_data:
+                                    value = inner_data[dkey]
                                     if isinstance(value, list) and len(value) > 0:
                                         results = value
                                         break
-                                    elif isinstance(value, dict):
-                                        results = [value]
-                                        break
+
+                            # 3. 그래도 없으면 inner_data에서 첫 번째 리스트 찾기
+                            if not results:
+                                skip_keys = {'totalCnt', 'page', 'target', 'section', '키워드',
+                                           'resultMsg', 'resultCode', 'numOfRows'}
+                                for key, value in inner_data.items():
+                                    if key not in skip_keys:
+                                        if isinstance(value, list) and len(value) > 0:
+                                            results = value
+                                            break
 
                         logger.info(f"[{target}] 검색 결과: {len(results)}건 (쿼리: {query})")
                         # 디버깅: 첫 번째 결과의 구조 출력
@@ -1057,7 +1076,6 @@ AI 분석을 이용하시려면 사이드바에서 OpenAI API 키를 입력해�
                     {"role": "system", "content": AI_LAWYER_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.3,
                 max_completion_tokens=2000
             )
             return response.choices[0].message.content
@@ -1172,7 +1190,6 @@ AI 분석을 이용하시려면 사이드바에서 OpenAI API 키를 입력해�
                     {"role": "system", "content": AI_LAWYER_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.3,
                 max_completion_tokens=2500
             )
             return response.choices[0].message.content
@@ -1287,7 +1304,6 @@ AI 분석을 이용하시려면 사이드바에서 OpenAI API 키를 입력해�
                     {"role": "system", "content": AI_LAWYER_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.3,
                 max_completion_tokens=2500
             )
             return response.choices[0].message.content
