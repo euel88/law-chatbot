@@ -695,75 +695,145 @@ class LegalAIEngine:
 
         return sorted(timeline, key=lambda x: x['date'])
 
-    def _get_value(self, item: Dict, *keys, default='') -> str:
+    # API 필드명 매핑 (camelCase -> 한글)
+    FIELD_MAPPING = {
+        'evtNm': '사건명',
+        'itmNm': '안건명',
+        'caseNm': '사건명',
+        'caseName': '사건명',
+        'caseNo': '사건번호',
+        'caseNumber': '사건번호',
+        'courtNm': '법원명',
+        'courtName': '법원명',
+        'judgeDate': '선고일자',
+        'judgmentDate': '선고일자',
+        'decisionDate': '의결일자',
+        'replyDate': '회신일자',
+        'replyOrg': '회신기관',
+        'lawNm': '법령명',
+        'lawName': '법령명',
+    }
+
+    # 제외할 값들 (메타데이터, 상태값, 필드명 등)
+    SKIP_VALUES = {
+        # 상태값
+        'success', 'true', 'false', 'null', 'none', 'error', 'ok',
+        # 숫자
+        '00', '0', '1', '2', '3', '4', '5',
+        # camelCase 필드명들
+        'evtnm', 'itmnm', 'casenm', 'caseno', 'courtnm', 'lawNm', 'lawnm',
+        'casename', 'casenumber', 'courtname', 'judgmentdate', 'decisiondate',
+        'replydate', 'replyorg', 'lawname', 'enforcementdate', 'promulgationdate',
+        # API 메타데이터 키
+        'target', 'type', 'page', 'totalcnt', 'section', 'display', 'sort',
+        'query', 'search', 'keyword', 'q',
+        # 기타
+        'prec', 'expc', 'decc', 'detc', 'law', 'eflaw', 'admrul', 'ordin', 'trty'
+    }
+
+    def _is_valid_value(self, value, query: str = '') -> bool:
+        """유효한 데이터 값인지 확인"""
+        if not value:
+            return False
+
+        val_str = str(value).strip()
+
+        # 빈 값 체크
+        if not val_str:
+            return False
+
+        val_lower = val_str.lower()
+
+        # SKIP_VALUES 체크
+        if val_lower in self.SKIP_VALUES:
+            return False
+
+        # 검색어와 동일한 값은 제외 (에코된 검색어)
+        if query:
+            query_lower = query.strip().lower()
+            if val_lower == query_lower:
+                return False
+            # 검색어가 값에 포함된 경우도 제외 (부분 일치)
+            if len(query_lower) > 5 and query_lower in val_lower and len(val_str) < len(query) + 10:
+                return False
+
+        # camelCase 패턴 감지 (소문자+대문자 연속)
+        if re.match(r'^[a-z]+[A-Z][a-z]+$', val_str):
+            return False
+
+        # 너무 짧은 값 제외 (1-2자 숫자)
+        if len(val_str) <= 2 and val_str.isdigit():
+            return False
+
+        # 영문 소문자로만 된 짧은 값 제외 (필드명일 가능성)
+        if len(val_str) <= 10 and val_str.isalpha() and val_str.islower():
+            return False
+
+        return True
+
+    def _get_value(self, item: Dict, *keys, default='', query: str = '') -> str:
         """여러 가능한 키에서 값을 찾는 헬퍼 함수"""
         if not isinstance(item, dict):
-            # dict가 아니면 문자열로 변환 시도
-            if item:
+            if item and self._is_valid_value(item, query):
                 return str(item)
             return default
 
-        # 1. 지정된 키에서 찾기
+        # 1. 지정된 키에서 찾기 (매핑된 키 포함)
+        all_keys = list(keys)
         for key in keys:
-            if key in item and item[key]:
+            if key in self.FIELD_MAPPING:
+                all_keys.append(self.FIELD_MAPPING[key])
+            # 역매핑도 확인
+            for eng, kor in self.FIELD_MAPPING.items():
+                if key == kor:
+                    all_keys.append(eng)
+
+        for key in all_keys:
+            if key in item:
                 val = item[key]
-                # 중첩된 dict 처리
-                if isinstance(val, dict):
-                    # 첫 번째 문자열 값 반환
-                    for v in val.values():
-                        if v and not isinstance(v, (dict, list)):
-                            return str(v)
-                elif isinstance(val, list) and val:
-                    return str(val[0]) if val[0] else default
-                else:
+                if self._is_valid_value(val, query):
                     return str(val)
 
         # 2. 키 이름에 포함된 단어로 찾기 (부분 일치)
-        search_terms = ['명', '번호', '일자', 'name', 'Name', 'no', 'No', 'date', 'Date', 'title', 'Title']
+        search_terms = ['명', '번호', '일자', 'Nm', 'No', 'Date', 'Name', 'Title']
         for key, value in item.items():
-            if value and not isinstance(value, (dict, list)):
+            if self._is_valid_value(value, query):
                 for term in search_terms:
                     if term in key:
                         return str(value)
 
-        # 3. 숫자가 아닌 모든 문자열 값 반환
-        skip_keys = ['target', 'type', 'id', 'page', 'totalCnt', 'section']
-        for key, value in item.items():
-            if key.lower() not in [k.lower() for k in skip_keys]:
-                if value and isinstance(value, str):
-                    return value
-                elif value and not isinstance(value, (dict, list, bool)):
-                    return str(value)
-
-        # 4. 모든 값을 문자열로 합쳐서 반환 (최후의 수단)
-        all_values = []
-        for key, value in item.items():
-            if value and key.lower() not in [k.lower() for k in skip_keys]:
-                if not isinstance(value, (dict, list)):
-                    all_values.append(f"{key}: {value}")
-        if all_values:
-            return " | ".join(all_values[:3])  # 최대 3개
-
         return default
 
-    def _get_item_display(self, item: Dict, *preferred_keys) -> str:
+    def _get_item_display(self, item: Dict, *preferred_keys, query: str = '') -> str:
         """아이템 표시용 문자열 반환"""
         if not isinstance(item, dict):
-            return str(item) if item else '(정보 없음)'
+            if item and self._is_valid_value(item, query):
+                return str(item)
+            return '(정보 없음)'
 
-        # 우선 키에서 찾기
+        # 1. 우선 키에서 찾기
+        all_keys = list(preferred_keys)
         for key in preferred_keys:
-            if key in item and item[key]:
-                return str(item[key])
+            if key in self.FIELD_MAPPING:
+                all_keys.append(self.FIELD_MAPPING[key])
+            for eng, kor in self.FIELD_MAPPING.items():
+                if key == kor:
+                    all_keys.append(eng)
 
-        # 모든 값을 합쳐서 반환
-        parts = []
+        for key in all_keys:
+            if key in item:
+                val = item[key]
+                if self._is_valid_value(val, query):
+                    return str(val)
+
+        # 2. 유효한 값들 수집
+        skip_keys = {'target', 'type', 'id', 'page', 'totalcnt', 'section', 'success'}
+        valid_parts = []
         for key, value in item.items():
-            if value and key.lower() not in ['target', 'type', 'id', 'page', 'totalcnt']:
-                if not isinstance(value, (dict, list)):
-                    parts.append(f"{value}")
+            if key.lower() not in skip_keys and self._is_valid_value(value, query):
+                valid_parts.append(str(value))
 
-        return " | ".join(parts[:5]) if parts else '(정보 없음)'
+        return " | ".join(valid_parts[:3]) if valid_parts else '(정보 없음)'
 
     def _build_context(self, legal_data: Dict) -> str:
         """검색 결과를 컨텍스트로 구성 - 판례/유권해석 중심 확장"""
@@ -1281,7 +1351,7 @@ def display_chat_message(role: str, content: str):
     else:
         st.markdown(content)
 
-def display_search_results_detail(legal_data: Dict, engine: LegalAIEngine):
+def display_search_results_detail(legal_data: Dict, engine: LegalAIEngine, query: str = ''):
     """검색된 판례/유권해석 상세 표시"""
     if not legal_data:
         return
@@ -1293,47 +1363,51 @@ def display_search_results_detail(legal_data: Dict, engine: LegalAIEngine):
         with st.expander(f"📚 검색된 판례 ({len(basic['prec'])}건)", expanded=True):
             for idx, prec in enumerate(basic['prec'][:20], 1):
                 # 먼저 _get_item_display로 시도
-                display_name = engine._get_item_display(prec, '사건명', '판례명', 'caseName', '제목')
-                case_no = engine._get_value(prec, '사건번호', 'caseNo', 'caseNumber')
-                court = engine._get_value(prec, '법원명', '법원', 'courtName', 'court')
-                date = engine._get_value(prec, '선고일자', '판결일자', 'judgmentDate', 'decisionDate')
-                st.markdown(f"**{idx}. {display_name}**")
-                if case_no or court or date:
-                    st.caption(f"사건번호: {case_no or '-'} | 법원: {court or '-'} | 선고일: {date or '-'}")
+                display_name = engine._get_item_display(prec, '사건명', '판례명', 'caseName', '제목', query=query)
+                case_no = engine._get_value(prec, '사건번호', 'caseNo', 'caseNumber', query=query)
+                court = engine._get_value(prec, '법원명', '법원', 'courtName', 'court', query=query)
+                date = engine._get_value(prec, '선고일자', '판결일자', 'judgmentDate', 'decisionDate', query=query)
+                if display_name and display_name != '(정보 없음)':
+                    st.markdown(f"**{idx}. {display_name}**")
+                    if case_no or court or date:
+                        st.caption(f"사건번호: {case_no or '-'} | 법원: {court or '-'} | 선고일: {date or '-'}")
 
     # 법령해석례 상세
     if basic.get('expc'):
         with st.expander(f"📋 검색된 법령해석례 ({len(basic['expc'])}건)", expanded=True):
             for idx, expc in enumerate(basic['expc'][:20], 1):
-                display_name = engine._get_item_display(expc, '안건명', '제목', 'title', 'caseName')
-                no = engine._get_value(expc, '안건번호', 'caseNo', 'number')
-                org = engine._get_value(expc, '회신기관명', '회신기관', 'replyOrg')
-                date = engine._get_value(expc, '회신일자', 'replyDate')
-                st.markdown(f"**{idx}. {display_name}**")
-                if no or org or date:
-                    st.caption(f"안건번호: {no or '-'} | 회신기관: {org or '-'} | 회신일: {date or '-'}")
+                display_name = engine._get_item_display(expc, '안건명', '제목', 'title', 'caseName', query=query)
+                no = engine._get_value(expc, '안건번호', 'caseNo', 'number', query=query)
+                org = engine._get_value(expc, '회신기관명', '회신기관', 'replyOrg', query=query)
+                date = engine._get_value(expc, '회신일자', 'replyDate', query=query)
+                if display_name and display_name != '(정보 없음)':
+                    st.markdown(f"**{idx}. {display_name}**")
+                    if no or org or date:
+                        st.caption(f"안건번호: {no or '-'} | 회신기관: {org or '-'} | 회신일: {date or '-'}")
 
     # 행정심판례 상세
     if basic.get('decc'):
         with st.expander(f"⚖️ 검색된 행정심판례 ({len(basic['decc'])}건)", expanded=True):
             for idx, decc in enumerate(basic['decc'][:20], 1):
-                display_name = engine._get_item_display(decc, '사건명', '제목', 'caseName', 'title')
-                case_no = engine._get_value(decc, '사건번호', 'caseNo', 'caseNumber')
-                result = engine._get_value(decc, '재결결과', '재결구분명', 'result')
-                date = engine._get_value(decc, '의결일자', '재결일자', 'decisionDate')
-                st.markdown(f"**{idx}. {display_name}**")
-                if case_no or result or date:
-                    st.caption(f"사건번호: {case_no or '-'} | 재결결과: {result or '-'} | 의결일: {date or '-'}")
+                display_name = engine._get_item_display(decc, '사건명', '제목', 'caseName', 'title', query=query)
+                case_no = engine._get_value(decc, '사건번호', 'caseNo', 'caseNumber', query=query)
+                result = engine._get_value(decc, '재결결과', '재결구분명', 'result', query=query)
+                date = engine._get_value(decc, '의결일자', '재결일자', 'decisionDate', query=query)
+                if display_name and display_name != '(정보 없음)':
+                    st.markdown(f"**{idx}. {display_name}**")
+                    if case_no or result or date:
+                        st.caption(f"사건번호: {case_no or '-'} | 재결결과: {result or '-'} | 의결일: {date or '-'}")
 
     # 헌재결정례 상세
     if basic.get('detc'):
         with st.expander(f"🏛️ 검색된 헌재결정례 ({len(basic['detc'])}건)", expanded=False):
             for idx, detc in enumerate(basic['detc'][:10], 1):
-                display_name = engine._get_item_display(detc, '사건명', '결정명', 'caseName', '제목')
-                case_no = engine._get_value(detc, '사건번호', 'caseNo', 'caseNumber')
-                date = engine._get_value(detc, '종국일자', '선고일자', '결정일자', 'decisionDate')
-                st.markdown(f"**{idx}. {display_name}**")
-                st.caption(f"사건번호: {case_no or '-'} | 종국일: {date or '-'}")
+                display_name = engine._get_item_display(detc, '사건명', '결정명', 'caseName', '제목', query=query)
+                case_no = engine._get_value(detc, '사건번호', 'caseNo', 'caseNumber', query=query)
+                date = engine._get_value(detc, '종국일자', '선고일자', '결정일자', 'decisionDate', query=query)
+                if display_name and display_name != '(정보 없음)':
+                    st.markdown(f"**{idx}. {display_name}**")
+                    st.caption(f"사건번호: {case_no or '-'} | 종국일: {date or '-'}")
 
 def display_search_statistics(fact_sheet: Dict, engine: LegalAIEngine):
     """검색 결과 통계 표시"""
@@ -1858,7 +1932,9 @@ def main():
         engine = LegalAIEngine()
         st.markdown("---")
         st.markdown("## 📑 검색된 법률 자료")
-        display_search_results_detail(st.session_state.search_results, engine)
+        # fact_sheet에서 쿼리 가져오기
+        current_query = st.session_state.fact_sheet.get('query', '') if st.session_state.fact_sheet else ''
+        display_search_results_detail(st.session_state.search_results, engine, query=current_query)
 
     # 검색 통계 표시
     if st.session_state.fact_sheet:
