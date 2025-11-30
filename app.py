@@ -266,6 +266,61 @@ class LegalAIEngine:
             'adapSpecialDecc': {'name': '인사혁신처 소청심사위원회 재결례', 'key': 'adapSpecialDecc'},
         }
 
+    def extract_keywords(self, user_input: str) -> List[str]:
+        """사용자 입력에서 법률 관련 핵심 키워드 추출"""
+        # 불용어 정의
+        stopwords = ['은', '는', '이', '가', '을', '를', '의', '에', '에서', '으로', '로',
+                    '와', '과', '도', '만', '뿐', '까지', '부터', '에게', '한테', '께',
+                    '입니다', '합니다', '있습니다', '없습니다', '됩니다', '습니다',
+                    '하는', '되는', '있는', '없는', '한', '된', '할', '될',
+                    '것', '수', '때', '등', '및', '또는', '그리고', '하지만', '그러나',
+                    '어떻게', '무엇', '어디', '언제', '누구', '왜', '어떤',
+                    '좀', '잘', '더', '매우', '정말', '아주', '너무', '많이',
+                    '저', '제', '나', '내', '우리', '저희', '그', '그녀', '그들']
+
+        # 법률 관련 중요 키워드 (우선 추출)
+        legal_keywords = [
+            '해고', '부당해고', '임금', '퇴직금', '근로', '노동', '계약', '위반',
+            '손해배상', '불법행위', '채무불이행', '계약해지', '계약해제',
+            '임대차', '전세', '월세', '보증금', '명도', '인도',
+            '상속', '유언', '증여', '재산분할', '이혼', '위자료', '양육비',
+            '형사', '민사', '행정', '소송', '재판', '항소', '상고',
+            '사기', '횡령', '배임', '폭행', '상해', '명예훼손',
+            '저작권', '특허', '상표', '영업비밀', '지식재산',
+            '개인정보', '정보보호', '프라이버시',
+            '세금', '조세', '부가세', '소득세', '법인세', '상속세', '증여세',
+            '건축', '인허가', '허가', '신고', '등록', '면허',
+            '교통사고', '산재', '산업재해', '보험', '보상',
+            '파산', '회생', '도산', '채무', '채권', '담보', '저당', '압류',
+            '해제', '취소', '무효', '철회', '해지',
+            '위임', '대리', '보증', '연대보증'
+        ]
+
+        keywords = []
+
+        # 1. 법률 관련 키워드 먼저 추출
+        input_lower = user_input.lower()
+        for kw in legal_keywords:
+            if kw in user_input:
+                keywords.append(kw)
+
+        # 2. 명사 추출 (간단한 패턴 매칭)
+        # 한글 단어 추출 (2글자 이상)
+        words = re.findall(r'[가-힣]{2,}', user_input)
+        for word in words:
+            # 불용어 제거
+            is_stopword = False
+            for sw in stopwords:
+                if word.endswith(sw) or word == sw:
+                    is_stopword = True
+                    break
+            if not is_stopword and word not in keywords:
+                keywords.append(word)
+
+        # 3. 중복 제거 및 상위 키워드 반환
+        unique_keywords = list(dict.fromkeys(keywords))
+        return unique_keywords[:10]  # 최대 10개 키워드
+
     async def _search_by_target(self, session, query: str, target: str,
                                 display: int = 10) -> List[Dict]:
         """특정 target으로 검색"""
@@ -305,20 +360,60 @@ class LegalAIEngine:
             logger.error(f"검색 오류 ({target}): {e}")
         return []
 
-    async def search_basic_legal_data(self, query: str) -> Dict:
-        """기본 법률 데이터 검색 (법령, 판례, 행정규칙 등)"""
+    async def search_basic_legal_data(self, query: str, keywords: List[str] = None) -> Dict:
+        """기본 법률 데이터 검색 (법령, 판례, 행정규칙 등) - 확장 검색"""
+        # 검색 결과 수 설정 (판례, 유권해석 중심으로 대폭 증가)
+        display_counts = {
+            'law': 30,        # 현행법령(공포일)
+            'eflaw': 30,      # 현행법령(시행일)
+            'prec': 50,       # 판례 - 최대한 많이
+            'admrul': 20,     # 행정규칙
+            'ordin': 20,      # 자치법규
+            'detc': 30,       # 헌재결정례
+            'expc': 50,       # 법령해석례 - 최대한 많이
+            'decc': 50,       # 행정심판례 - 최대한 많이
+            'trty': 10,       # 조약
+        }
+
+        all_results = {target: [] for target in self.basic_targets.keys()}
+
+        # 메인 쿼리로 검색
         async with aiohttp.ClientSession() as session:
             tasks = []
-            for target_code, target_info in self.basic_targets.items():
-                display = 20 if target_code in ['law', 'eflaw', 'prec'] else 10
+            for target_code in self.basic_targets.keys():
+                display = display_counts.get(target_code, 20)
                 tasks.append(self._search_by_target(session, query, target_code, display))
 
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            return {
-                target_code: results[idx] if not isinstance(results[idx], Exception) else []
-                for idx, target_code in enumerate(self.basic_targets.keys())
-            }
+            for idx, target_code in enumerate(self.basic_targets.keys()):
+                if not isinstance(results[idx], Exception) and results[idx]:
+                    all_results[target_code].extend(results[idx])
+
+        # 추가 키워드로 확장 검색 (판례, 법령해석례, 행정심판례 대상)
+        if keywords:
+            important_targets = ['prec', 'expc', 'decc', 'detc']
+            for keyword in keywords[:5]:  # 상위 5개 키워드만
+                if keyword != query:  # 메인 쿼리와 다른 경우만
+                    async with aiohttp.ClientSession() as session:
+                        tasks = []
+                        for target_code in important_targets:
+                            tasks.append(self._search_by_target(session, keyword, target_code, 20))
+
+                        kw_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                        for idx, target_code in enumerate(important_targets):
+                            if not isinstance(kw_results[idx], Exception) and kw_results[idx]:
+                                # 중복 제거하며 추가
+                                existing_ids = {item.get('판례일련번호', item.get('안건번호', item.get('사건번호', '')))
+                                              for item in all_results[target_code]}
+                                for item in kw_results[idx]:
+                                    item_id = item.get('판례일련번호', item.get('안건번호', item.get('사건번호', '')))
+                                    if item_id and item_id not in existing_ids:
+                                        all_results[target_code].append(item)
+                                        existing_ids.add(item_id)
+
+        return all_results
 
     async def search_committee_decisions(self, query: str,
                                         selected_committees: List[str] = None) -> Dict:
@@ -380,7 +475,7 @@ class LegalAIEngine:
 
     async def comprehensive_search(self, query: str,
                                   search_options: Dict = None) -> Dict:
-        """종합 법률 검색"""
+        """종합 법률 검색 - 키워드 추출 및 확장 검색"""
         if search_options is None:
             search_options = {
                 'basic': True,
@@ -389,8 +484,13 @@ class LegalAIEngine:
                 'special_tribunals': True
             }
 
+        # 사용자 입력에서 키워드 추출
+        keywords = self.extract_keywords(query)
+        logger.info(f"추출된 키워드: {keywords}")
+
         results = {
             'query': query,
+            'keywords': keywords,
             'search_time': datetime.now().isoformat(),
             'basic': {},
             'committees': {},
@@ -400,9 +500,9 @@ class LegalAIEngine:
 
         tasks = []
 
-        # 기본 법률 데이터 검색
+        # 기본 법률 데이터 검색 (키워드 기반 확장 검색)
         if search_options.get('basic', True):
-            tasks.append(('basic', self.search_basic_legal_data(query)))
+            tasks.append(('basic', self.search_basic_legal_data(query, keywords)))
 
         # 위원회 결정문 검색
         committees = search_options.get('committees', [])
@@ -522,19 +622,19 @@ class LegalAIEngine:
         return sorted(timeline, key=lambda x: x['date'])
 
     def _build_context(self, legal_data: Dict) -> str:
-        """검색 결과를 컨텍스트로 구성"""
+        """검색 결과를 컨텍스트로 구성 - 판례/유권해석 중심 확장"""
         context_parts = []
 
         # 기본 법률 데이터
         if legal_data.get('basic'):
             basic = legal_data['basic']
 
-            # 법령
+            # 법령 (상위 15개)
             if basic.get('law') or basic.get('eflaw'):
                 laws = (basic.get('law', []) or []) + (basic.get('eflaw', []) or [])
                 if laws:
-                    context_parts.append("\n[관련 법령]")
-                    for idx, law in enumerate(laws[:10], 1):
+                    context_parts.append(f"\n[관련 법령] (총 {len(laws)}건)")
+                    for idx, law in enumerate(laws[:15], 1):
                         name = law.get('법령명한글', law.get('법령명', ''))
                         dept = law.get('소관부처명', '')
                         date = law.get('시행일자', law.get('공포일자', ''))
@@ -544,35 +644,42 @@ class LegalAIEngine:
                         if date:
                             context_parts.append(f"   - 시행/공포일: {date}")
 
-            # 판례
+            # 판례 (상위 30개 - 핵심 자료)
             if basic.get('prec'):
-                context_parts.append("\n[관련 판례]")
-                for idx, prec in enumerate(basic['prec'][:10], 1):
+                precs = basic['prec']
+                context_parts.append(f"\n[관련 판례] (총 {len(precs)}건) ★ 핵심 자료")
+                for idx, prec in enumerate(precs[:30], 1):
                     name = prec.get('사건명', '')
                     date = prec.get('선고일자', '')
                     court = prec.get('법원명', '')
                     case_no = prec.get('사건번호', '')
-                    context_parts.append(f"{idx}. {name} ({date})")
-                    if court:
-                        context_parts.append(f"   - 법원: {court}")
+                    context_parts.append(f"{idx}. {name}")
                     if case_no:
                         context_parts.append(f"   - 사건번호: {case_no}")
+                    if court:
+                        context_parts.append(f"   - 법원: {court}")
+                    if date:
+                        context_parts.append(f"   - 선고일: {date}")
 
-            # 헌재결정례
+            # 헌재결정례 (상위 15개)
             if basic.get('detc'):
-                context_parts.append("\n[관련 헌재결정례]")
-                for idx, case in enumerate(basic['detc'][:5], 1):
+                detcs = basic['detc']
+                context_parts.append(f"\n[헌재결정례] (총 {len(detcs)}건)")
+                for idx, case in enumerate(detcs[:15], 1):
                     name = case.get('사건명', '')
                     date = case.get('종국일자', case.get('선고일자', ''))
                     case_no = case.get('사건번호', '')
-                    context_parts.append(f"{idx}. {name} ({date})")
+                    context_parts.append(f"{idx}. {name}")
                     if case_no:
                         context_parts.append(f"   - 사건번호: {case_no}")
+                    if date:
+                        context_parts.append(f"   - 종국일: {date}")
 
-            # 법령해석례
+            # 법령해석례 (상위 25개 - 핵심 자료)
             if basic.get('expc'):
-                context_parts.append("\n[관련 법령해석례]")
-                for idx, interp in enumerate(basic['expc'][:5], 1):
+                expcs = basic['expc']
+                context_parts.append(f"\n[법령해석례/유권해석] (총 {len(expcs)}건) ★ 핵심 자료")
+                for idx, interp in enumerate(expcs[:25], 1):
                     name = interp.get('안건명', '')
                     no = interp.get('안건번호', '')
                     org = interp.get('회신기관명', '')
@@ -585,46 +692,56 @@ class LegalAIEngine:
                     if date:
                         context_parts.append(f"   - 회신일자: {date}")
 
-            # 행정심판례
+            # 행정심판례 (상위 25개 - 핵심 자료)
             if basic.get('decc'):
-                context_parts.append("\n[관련 행정심판례]")
-                for idx, ruling in enumerate(basic['decc'][:5], 1):
+                deccs = basic['decc']
+                context_parts.append(f"\n[행정심판례] (총 {len(deccs)}건) ★ 핵심 자료")
+                for idx, ruling in enumerate(deccs[:25], 1):
                     name = ruling.get('사건명', '')
                     date = ruling.get('의결일자', ruling.get('재결일자', ''))
                     case_no = ruling.get('사건번호', '')
-                    context_parts.append(f"{idx}. {name} ({date})")
+                    result = ruling.get('재결결과', ruling.get('재결구분명', ''))
+                    context_parts.append(f"{idx}. {name}")
                     if case_no:
                         context_parts.append(f"   - 사건번호: {case_no}")
+                    if result:
+                        context_parts.append(f"   - 재결결과: {result}")
+                    if date:
+                        context_parts.append(f"   - 의결일: {date}")
 
-            # 행정규칙
+            # 행정규칙 (상위 10개)
             if basic.get('admrul'):
-                context_parts.append("\n[관련 행정규칙]")
-                for idx, rule in enumerate(basic['admrul'][:5], 1):
+                admruls = basic['admrul']
+                context_parts.append(f"\n[행정규칙] (총 {len(admruls)}건)")
+                for idx, rule in enumerate(admruls[:10], 1):
                     name = rule.get('행정규칙명', '')
                     dept = rule.get('소관부처명', rule.get('소관부처', ''))
                     context_parts.append(f"{idx}. {name}")
                     if dept:
                         context_parts.append(f"   - 소관부처: {dept}")
 
-            # 자치법규
+            # 자치법규 (상위 10개)
             if basic.get('ordin'):
-                context_parts.append("\n[관련 자치법규]")
-                for idx, ordin in enumerate(basic['ordin'][:5], 1):
+                ordins = basic['ordin']
+                context_parts.append(f"\n[자치법규] (총 {len(ordins)}건)")
+                for idx, ordin in enumerate(ordins[:10], 1):
                     name = ordin.get('자치법규명', '')
                     local = ordin.get('지자체기관명', ordin.get('자치단체명', ''))
                     context_parts.append(f"{idx}. {name}")
                     if local:
                         context_parts.append(f"   - 지자체: {local}")
 
-            # 조약
+            # 조약 (상위 5개)
             if basic.get('trty'):
-                context_parts.append("\n[관련 조약]")
-                for idx, treaty in enumerate(basic['trty'][:5], 1):
-                    name = treaty.get('조약명', treaty.get('조약명한글', ''))
-                    date = treaty.get('체결일자', '')
-                    context_parts.append(f"{idx}. {name}")
-                    if date:
-                        context_parts.append(f"   - 체결일자: {date}")
+                trtys = basic['trty']
+                if trtys:
+                    context_parts.append(f"\n[조약] (총 {len(trtys)}건)")
+                    for idx, treaty in enumerate(trtys[:5], 1):
+                        name = treaty.get('조약명', treaty.get('조약명한글', ''))
+                        date = treaty.get('체결일자', '')
+                        context_parts.append(f"{idx}. {name}")
+                        if date:
+                            context_parts.append(f"   - 체결일자: {date}")
 
         # 위원회 결정문
         if legal_data.get('committees'):
@@ -712,7 +829,7 @@ AI 분석을 이용하시려면 사이드바에서 OpenAI API 키를 입력해�
 
     async def generate_legal_advice(self, query: str, legal_data: Dict,
                                    fact_sheet: Dict, service_type: ServiceType = None) -> str:
-        """AI 법률 조언 생성"""
+        """AI 법률 조언 생성 - 실제 검색 결과 기반"""
         openai_client = get_openai_client()
 
         if not openai_client:
@@ -722,40 +839,74 @@ AI 분석을 이용하시려면 사이드바에서 OpenAI API 키를 입력해�
         timeline = "\n".join([f"- {item['date']}: {item['event']}"
                              for item in fact_sheet.get('timeline', [])])
 
+        # 검색 통계 요약
+        stats_summary = self._get_search_stats_summary(legal_data)
+
+        # 추출된 키워드
+        keywords = legal_data.get('keywords', [])
+        keywords_str = ', '.join(keywords) if keywords else '없음'
+
         prompt = f"""
 {AI_LAWYER_SYSTEM_PROMPT}
 
 [서비스 유형: 법률 연구 및 자료 검색]
 
-의뢰인 질문: {query}
+## 의뢰인 상황/질문:
+{query}
 
-사실관계 Timeline:
+## 추출된 핵심 키워드:
+{keywords_str}
+
+## 사실관계 Timeline:
 {timeline if timeline else "특별한 일자 정보 없음"}
 
-검색된 법률 정보:
+## 검색 결과 통계:
+{stats_summary}
+
+## 검색된 법률 정보 (실제 법제처 데이터):
 {context}
 
-위 정보를 바탕으로 다음 구조로 답변하세요:
+---
+## 중요 지침:
+1. 위에 제공된 "검색된 법률 정보"는 법제처 Open API에서 실제로 검색된 자료입니다.
+2. 답변 시 반드시 위 검색 결과에서 구체적인 판례번호, 법령해석례 안건번호, 행정심판례 사건번호를 인용하세요.
+3. 일반적인 법률 지식이 아닌, 검색된 실제 자료를 기반으로 답변하세요.
+4. 검색 결과가 부족한 경우 그 사실을 명시하세요.
 
-## 1. 핵심 답변 (2-3문장 요약)
+## 답변 구조:
 
-## 2. 관련 법령 분석
-- 주요 법령과 조항
-- 핵심 내용 설명
+### 1. 핵심 답변 (2-3문장 요약)
+[의뢰인 상황에 대한 핵심 결론]
 
-## 3. 관련 판례 및 유권해석 분석
-- 유사 판례 소개
-- 법령해석례/행정심판례 분석
-- 판결/해석의 시사점
+### 2. 관련 법령 분석
+[검색된 법령 중 관련 법령을 구체적으로 인용]
+- 법령명, 조항 번호 명시
+- 해당 조항의 핵심 내용 설명
 
-## 4. 실무적 조언
+### 3. 관련 판례 분석 (★ 중요)
+[검색된 판례를 사건번호와 함께 구체적으로 인용]
+- 각 판례의 사건번호, 선고일자, 법원 명시
+- 해당 판례의 판시사항/시사점 설명
+- 의뢰인 상황과의 관련성 분석
+
+### 4. 유권해석/행정심판례 분석 (★ 중요)
+[검색된 법령해석례, 행정심판례를 안건번호와 함께 구체적으로 인용]
+- 각 해석례/심판례의 안건번호, 회신기관/재결청 명시
+- 해석/재결의 핵심 내용
+- 의뢰인 상황에 대한 시사점
+
+### 5. 종합 의견 및 실무적 조언
+- 위 자료들을 종합한 법적 판단
+- 구체적인 대응 방안 제시
 - 주의사항
-- 권장 행동
 
-## 5. 추가 확인사항
+### 6. 추가 확인사항
 - 더 정확한 조언을 위해 필요한 정보
+- 추가 검색이 필요한 분야
 
-⚖️ 필수 고지사항을 반드시 포함하세요.
+---
+⚖️ 본 내용은 AI가 작성한 참고자료이며, 법률자문이 아닙니다.
+구체적인 사안에 대해서는 반드시 변호사 등 전문가의 검토가 필요합니다.
 """
 
         try:
@@ -766,12 +917,55 @@ AI 분석을 이용하시려면 사이드바에서 OpenAI API 키를 입력해�
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.3,
-                max_tokens=3000
+                max_tokens=4000  # 더 긴 응답 허용
             )
             return response.choices[0].message.content
         except Exception as e:
             logger.error(f"AI 응답 생성 오류: {e}")
             return self._generate_fallback_response(query, legal_data)
+
+    def _get_search_stats_summary(self, legal_data: Dict) -> str:
+        """검색 통계 요약 생성"""
+        stats = []
+
+        if legal_data.get('basic'):
+            basic = legal_data['basic']
+            if basic.get('law') or basic.get('eflaw'):
+                laws = (basic.get('law', []) or []) + (basic.get('eflaw', []) or [])
+                if laws:
+                    stats.append(f"- 법령: {len(laws)}건")
+            if basic.get('prec'):
+                stats.append(f"- 판례: {len(basic['prec'])}건 ★")
+            if basic.get('detc'):
+                stats.append(f"- 헌재결정례: {len(basic['detc'])}건")
+            if basic.get('expc'):
+                stats.append(f"- 법령해석례: {len(basic['expc'])}건 ★")
+            if basic.get('decc'):
+                stats.append(f"- 행정심판례: {len(basic['decc'])}건 ★")
+            if basic.get('admrul'):
+                stats.append(f"- 행정규칙: {len(basic['admrul'])}건")
+            if basic.get('ordin'):
+                stats.append(f"- 자치법규: {len(basic['ordin'])}건")
+
+        if legal_data.get('committees'):
+            for key, items in legal_data['committees'].items():
+                if items:
+                    name = self.committee_targets.get(key, {}).get('name', key)
+                    stats.append(f"- {name}: {len(items)}건")
+
+        if legal_data.get('ministries'):
+            for key, items in legal_data['ministries'].items():
+                if items:
+                    name = self.ministry_targets.get(key, {}).get('name', key)
+                    stats.append(f"- {name}: {len(items)}건")
+
+        if legal_data.get('special_tribunals'):
+            for key, items in legal_data['special_tribunals'].items():
+                if items:
+                    name = self.special_tribunal_targets.get(key, {}).get('name', key)
+                    stats.append(f"- {name}: {len(items)}건")
+
+        return "\n".join(stats) if stats else "검색 결과 없음"
 
 # ===== UI 함수들 =====
 def display_chat_message(role: str, content: str):
