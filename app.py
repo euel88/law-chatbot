@@ -409,20 +409,28 @@ class LegalAIEngine:
 
         try:
             prompt = f"""당신은 한국 법률 검색 및 법률 검토 전문가입니다.
-사용자의 법률 검토 질의를 분석하여 법제처 Open API 검색에 최적화된 정보를 추출해주세요.
+사용자의 법률 검토 질의를 깊이 분석하여 법제처 Open API 검색에 최적화된 정보를 추출해주세요.
 
 ## 사용자 질의
 {user_input}
+
+## 분석 지침
+1. 질의에서 **핵심 법적 쟁점**을 정확히 파악하세요.
+2. 배경 설명이 아닌 **실제 질문**에 집중하세요.
+3. 관련 법률 조문과 법적 개념을 정확히 식별하세요.
+4. 검색어는 핵심 쟁점에 직접 관련된 것만 생성하세요.
 
 ## 분석 요청
 위 질의를 분석하여 아래 JSON 형식으로만 응답하세요 (다른 설명 없이):
 
 {{
-    "intent": "질문의 핵심 의도 (예: 법적 요건 확인, 위법성 검토, 절차 문의 등)",
-    "legal_issues": ["분석된 법적 쟁점 리스트"],
-    "law_names": ["관련될 수 있는 법률명 (XX법, XX령, XX규칙 형태)"],
-    "keywords": ["핵심 법률 키워드 5개 이내"],
-    "search_queries": ["법제처 API 검색어 5개 - 다양한 조합으로"],
+    "intent": "질문의 핵심 의도를 한 문장으로",
+    "core_question": "사용자가 실제로 알고 싶은 법적 질문",
+    "legal_issues": ["핵심 법적 쟁점 리스트 - 질문과 직접 관련된 것만"],
+    "law_names": ["관련 법률명 (민법, 가사소송법 등)"],
+    "legal_concepts": ["관련 법적 개념 (면접교섭권, 가처분 등)"],
+    "keywords": ["핵심 검색 키워드 5개"],
+    "search_queries": ["법제처 API 검색어 5개 - 핵심 쟁점 중심"],
     "search_priority": {{
         "laws": true/false,
         "precedents": true/false,
@@ -430,32 +438,47 @@ class LegalAIEngine:
         "committee_decisions": true/false,
         "ministry_opinions": true/false
     }},
-    "recommended_sources": ["law", "prec", "expc", "decc", "admrul", "ordin"]
+    "recommended_sources": ["law", "prec", "expc", "decc"]
 }}
 
 ## 검색어 생성 규칙
-1. 법률명이 명시된 경우 → "법률명 + 핵심어" 형태로 검색어 생성 (예: "대부업법 자기자본")
-2. 법률명이 없는 경우 → 법적 개념과 행위 중심 키워드 (예: "임대차 보증금 반환")
-3. 다양한 검색 조합 생성: 법률명+조문, 법률명+요건, 개념어 단독 등
-4. 유사 법률도 함께 검색할 수 있도록 관련 법률명 포함
+1. **핵심 쟁점 중심**: 배경이 아닌 실제 질문에 관한 검색어 생성
+2. **법적 개념 조합**: "면접교섭권 가처분", "양육권 임시처분" 등
+3. **관련 법률+개념**: "민법 면접교섭", "가사소송법 임시처분" 등
+4. **구체적 상황**: "접근금지 면접교섭", "이혼소송 자녀면접" 등
 
-## 검색 소스 코드
-- law: 법령 (법률, 시행령, 시행규칙)
-- prec: 판례 (대법원, 헌법재판소)
-- expc: 법령해석례 (법제처)
-- decc: 행정심판례
-- admrul: 행정규칙
-- ordin: 자치법규
+## 예시 1 - 가족법
+질의: "이혼 소송 중 접근금지 가처분 상태에서 면접교섭권을 받을 수 있나요?"
+응답:
+{{
+    "intent": "접근금지 가처분과 면접교섭권의 관계 확인",
+    "core_question": "접근금지 가처분이 있어도 자녀 면접교섭권을 행사할 수 있는지",
+    "legal_issues": ["면접교섭권의 법적 성격", "접근금지 가처분의 효력 범위", "이혼소송 중 임시 면접교섭"],
+    "law_names": ["민법", "가사소송법", "가사소송규칙"],
+    "legal_concepts": ["면접교섭권", "접근금지가처분", "양육권", "임시처분"],
+    "keywords": ["면접교섭권", "접근금지", "가처분", "양육권", "이혼"],
+    "search_queries": ["면접교섭권 가처분", "접근금지 면접교섭", "이혼 양육권 면접", "민법 837조", "가사소송 임시처분"],
+    "search_priority": {{
+        "laws": true,
+        "precedents": true,
+        "interpretations": true,
+        "committee_decisions": false,
+        "ministry_opinions": false
+    }},
+    "recommended_sources": ["law", "prec", "expc"]
+}}
 
-## 예시
+## 예시 2 - 행정법
 질의: "대부업법상 자기자본 요건이 얼마인가요?"
 응답:
 {{
     "intent": "대부업 등록요건 중 자기자본 기준 확인",
-    "legal_issues": ["대부업 등록요건", "자기자본 산정기준", "매입채권추심업 자본요건"],
+    "core_question": "대부업 등록에 필요한 자기자본 금액",
+    "legal_issues": ["대부업 등록요건", "자기자본 산정기준"],
     "law_names": ["대부업법", "대부업법 시행령"],
-    "keywords": ["대부업", "자기자본", "등록요건", "매입채권추심업"],
-    "search_queries": ["대부업법 자기자본", "대부업 등록요건", "대부업법 시행령 자본", "매입채권추심업 등록", "대부업 자본금"],
+    "legal_concepts": ["자기자본", "등록요건", "대부업"],
+    "keywords": ["대부업", "자기자본", "등록요건"],
+    "search_queries": ["대부업법 자기자본", "대부업 등록요건", "대부업법 시행령 자본"],
     "search_priority": {{
         "laws": true,
         "precedents": false,
@@ -506,12 +529,17 @@ class LegalAIEngine:
                     result['keywords'] = basic_keywords
                 if 'legal_issues' not in result:
                     result['legal_issues'] = []
+                if 'legal_concepts' not in result:
+                    result['legal_concepts'] = []
+                if 'core_question' not in result:
+                    result['core_question'] = result.get('intent', '')
                 if 'search_priority' not in result:
                     result['search_priority'] = default_result['search_priority']
                 if 'recommended_sources' not in result:
                     result['recommended_sources'] = default_result['recommended_sources']
 
-                logger.info(f"AI 의도 분석 결과: intent={result.get('intent')}, queries={result.get('search_queries')}")
+                logger.info(f"AI 의도 분석 결과: intent={result.get('intent')}, core_question={result.get('core_question')}")
+                logger.info(f"검색 쿼리: {result.get('search_queries')}")
                 return result
 
             except (json.JSONDecodeError, ValueError) as e:
@@ -521,6 +549,107 @@ class LegalAIEngine:
         except Exception as e:
             logger.error(f"AI 의도 분석 오류: {e}")
             return default_result
+
+    def verify_search_results(self, user_query: str, ai_analysis: Dict, results: List[Dict], category: str) -> List[Dict]:
+        """AI를 사용하여 검색 결과의 관련성을 검증하고 필터링
+
+        Args:
+            user_query: 원본 사용자 질의
+            ai_analysis: AI 의도 분석 결과
+            results: 검색된 결과 리스트
+            category: 결과 카테고리 (prec, expc, decc 등)
+
+        Returns:
+            관련성이 높은 결과만 필터링된 리스트
+        """
+        if not results:
+            return results
+
+        client = get_openai_client()
+        if not client:
+            return results  # AI 없으면 원본 반환
+
+        # 결과가 너무 많으면 상위 20개만 검증
+        results_to_verify = results[:20]
+
+        # 결과 요약 생성
+        result_summaries = []
+        for idx, item in enumerate(results_to_verify):
+            title = item.get('사건명') or item.get('제목') or item.get('판례명') or item.get('안건명') or ''
+            case_no = item.get('사건번호') or item.get('안건번호') or ''
+            summary = f"{idx+1}. {title} ({case_no})"
+            result_summaries.append(summary)
+
+        results_text = "\n".join(result_summaries)
+
+        try:
+            prompt = f"""당신은 법률 검색 결과 분석 전문가입니다.
+
+## 사용자 질의
+{user_query}
+
+## 핵심 질문
+{ai_analysis.get('core_question', ai_analysis.get('intent', ''))}
+
+## 핵심 법적 쟁점
+{', '.join(ai_analysis.get('legal_issues', []))}
+
+## 핵심 법적 개념
+{', '.join(ai_analysis.get('legal_concepts', []))}
+
+## 검색된 {category} 결과
+{results_text}
+
+## 요청
+위 검색 결과 중에서 사용자 질의의 핵심 쟁점과 **직접적으로 관련**있는 결과의 번호만 선택하세요.
+
+응답 형식 (JSON만):
+{{"relevant_indices": [1, 3, 5], "reason": "선택 이유 한 줄"}}
+
+판단 기준:
+1. 제목/사건명이 핵심 법적 쟁점과 직접 관련되어야 함
+2. 배경 설명(이혼, 소송 등)만 일치하는 것은 관련 없음으로 처리
+3. 예: 질문이 "면접교섭권"이면 재산분할/위자료 판례는 관련 없음
+"""
+
+            response = client.chat.completions.create(
+                model="gpt-5.1",
+                messages=[
+                    {"role": "system", "content": "법률 검색 결과 관련성 평가 전문가입니다. JSON 형식으로만 응답합니다."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=300
+            )
+
+            result_text = response.choices[0].message.content.strip()
+            logger.info(f"AI 검증 결과: {result_text[:200]}")
+
+            # JSON 파싱
+            try:
+                if '{' in result_text:
+                    start_idx = result_text.find('{')
+                    end_idx = result_text.rfind('}') + 1
+                    json_str = result_text[start_idx:end_idx]
+                    verification = json.loads(json_str)
+
+                    relevant_indices = verification.get('relevant_indices', [])
+                    if relevant_indices:
+                        # 1-indexed를 0-indexed로 변환
+                        filtered_results = [
+                            results_to_verify[i-1] for i in relevant_indices
+                            if 1 <= i <= len(results_to_verify)
+                        ]
+                        logger.info(f"AI 검증: {len(results_to_verify)}개 중 {len(filtered_results)}개 관련 결과 선택")
+                        logger.info(f"선택 이유: {verification.get('reason', '')}")
+                        return filtered_results if filtered_results else results[:5]
+
+            except (json.JSONDecodeError, ValueError, IndexError) as e:
+                logger.warning(f"AI 검증 결과 파싱 실패: {e}")
+
+        except Exception as e:
+            logger.error(f"AI 검색 결과 검증 오류: {e}")
+
+        return results  # 오류 시 원본 반환
 
     async def _search_by_target(self, session, query: str, target: str,
                                 display: int = 10) -> List[Dict]:
@@ -815,6 +944,47 @@ class LegalAIEngine:
             except Exception as e:
                 logger.error(f"검색 오류 ({key}): {e}")
                 results[key] = {}
+
+        # AI를 사용하여 검색 결과 검증 및 필터링
+        logger.info("=== AI 검색 결과 검증 시작 ===")
+
+        # 기본 검색 결과 검증 (판례, 법령해석례, 행정심판례)
+        if results.get('basic'):
+            for category in ['prec', 'expc', 'decc', 'detc']:
+                if results['basic'].get(category):
+                    original_count = len(results['basic'][category])
+                    results['basic'][category] = self.verify_search_results(
+                        query, ai_analysis, results['basic'][category], category
+                    )
+                    filtered_count = len(results['basic'][category])
+                    if original_count != filtered_count:
+                        logger.info(f"[{category}] 검증 완료: {original_count}건 → {filtered_count}건")
+
+        # 위원회 결정문 검증
+        if results.get('committees'):
+            for comm_key, comm_results in results['committees'].items():
+                if comm_results:
+                    original_count = len(comm_results)
+                    results['committees'][comm_key] = self.verify_search_results(
+                        query, ai_analysis, comm_results, f"위원회결정문({comm_key})"
+                    )
+                    filtered_count = len(results['committees'][comm_key])
+                    if original_count != filtered_count:
+                        logger.info(f"[{comm_key}] 검증 완료: {original_count}건 → {filtered_count}건")
+
+        # 부처별 법령해석 검증
+        if results.get('ministries'):
+            for ministry_key, ministry_results in results['ministries'].items():
+                if ministry_results:
+                    original_count = len(ministry_results)
+                    results['ministries'][ministry_key] = self.verify_search_results(
+                        query, ai_analysis, ministry_results, f"부처법령해석({ministry_key})"
+                    )
+                    filtered_count = len(results['ministries'][ministry_key])
+                    if original_count != filtered_count:
+                        logger.info(f"[{ministry_key}] 검증 완료: {original_count}건 → {filtered_count}건")
+
+        logger.info("=== AI 검색 결과 검증 완료 ===")
 
         return results
 
@@ -1815,6 +1985,11 @@ async def process_search(query: str, search_options: Dict):
         ai_analysis = legal_data.get('ai_analysis', {})
         if ai_analysis and ai_analysis.get('intent'):
             with st.expander("🤖 AI 질의 분석 결과", expanded=True):
+                # 핵심 질문
+                core_question = ai_analysis.get('core_question', '')
+                if core_question:
+                    st.markdown(f"**❓ 핵심 질문:** {core_question}")
+
                 # 의도 분석
                 st.markdown(f"**📌 분석된 의도:** {ai_analysis.get('intent', '알 수 없음')}")
 
@@ -1825,6 +2000,11 @@ async def process_search(query: str, search_options: Dict):
                     for issue in legal_issues:
                         st.markdown(f"  - {issue}")
 
+                # 핵심 법적 개념
+                legal_concepts = ai_analysis.get('legal_concepts', [])
+                if legal_concepts:
+                    st.markdown(f"**🔖 핵심 법적 개념:** {', '.join(legal_concepts)}")
+
                 # 관련 법령
                 law_names = ai_analysis.get('law_names', [])
                 if law_names:
@@ -1834,6 +2014,8 @@ async def process_search(query: str, search_options: Dict):
                 search_queries = ai_analysis.get('search_queries', [])
                 if search_queries:
                     st.markdown(f"**🔍 생성된 검색어:** {', '.join(search_queries)}")
+
+                st.info("💡 검색 결과는 AI가 관련성을 검증하여 핵심 쟁점과 직접 관련된 자료만 표시합니다.")
 
         # 2. 사실관계 정리
         progress.progress(60, "검색 결과 분석 중...")
