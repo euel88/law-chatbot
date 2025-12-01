@@ -1447,10 +1447,7 @@ class LegalAIEngine:
         if search_options.get('basic', True):
             for search_query in all_queries:
                 try:
-                    basic_results = await self.search_basic_legal_data(search_query, [], display_counts={
-                        'prec': 50, 'expc': 50, 'decc': 30, 'detc': 20,
-                        'law': 20, 'eflaw': 10, 'ordin': 10, 'treay': 5
-                    })
+                    basic_results = await self.search_basic_legal_data(search_query, [])
                     # 결과 병합 (중복 제거)
                     for key, items in basic_results.items():
                         if items:
