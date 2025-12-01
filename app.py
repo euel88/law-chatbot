@@ -832,6 +832,126 @@ class LegalAIEngine:
             logger.error(f"AI 의도 분석 오류: {e}")
             return default_result
 
+    def _analyze_no_results(self, query: str, ai_analysis: Dict, search_queries: List[str], search_options: Dict) -> Dict:
+        """검색 결과가 없을 때 AI가 원인을 분석하여 설명
+
+        Args:
+            query: 원본 사용자 질의
+            ai_analysis: AI 의도 분석 결과
+            search_queries: 시도한 검색 쿼리들
+            search_options: 검색 옵션
+
+        Returns:
+            문제점 및 원인 분석 결과
+        """
+        default_analysis = {
+            'problem_summary': '검색 결과를 찾을 수 없습니다.',
+            'possible_reasons': ['검색어와 일치하는 자료가 데이터베이스에 없을 수 있습니다.'],
+            'suggestions': ['다른 키워드로 검색해 보세요.'],
+            'search_queries_tried': search_queries
+        }
+
+        client = get_openai_client()
+        if not client:
+            return default_analysis
+
+        try:
+            # 검색 옵션 정보 구성
+            search_sources = []
+            if search_options.get('basic', True):
+                search_sources.append('법령, 판례, 법령해석례, 행정심판례')
+            if search_options.get('committees'):
+                search_sources.append(f"위원회 결정문: {', '.join(search_options['committees'])}")
+            if search_options.get('ministries'):
+                search_sources.append(f"부처 법령해석: {', '.join(search_options['ministries'])}")
+
+            prompt = f"""당신은 한국 법률 검색 전문가입니다. 법제처 Open API 검색에서 결과가 없을 때 그 원인을 분석해주세요.
+
+## 원본 검색 요청
+{query}
+
+## AI 의도 분석 결과
+- 분석된 의도: {ai_analysis.get('intent', '알 수 없음')}
+- 핵심 질문: {ai_analysis.get('core_question', '알 수 없음')}
+- 법적 쟁점: {ai_analysis.get('legal_issues', [])}
+- 관련 법률: {ai_analysis.get('law_names', [])}
+- 검색 키워드: {ai_analysis.get('keywords', [])}
+
+## 시도한 검색 쿼리
+{search_queries}
+
+## 검색 범위
+{', '.join(search_sources) if search_sources else '기본 법령/판례 검색'}
+
+## 분석 요청
+위 검색에서 결과가 없는 이유를 분석하고, 사용자에게 도움이 되는 설명을 제공하세요.
+다음 JSON 형식으로만 응답하세요:
+
+{{
+    "problem_summary": "검색 결과가 없는 핵심 이유를 2-3문장으로 설명",
+    "possible_reasons": [
+        "가능한 원인 1",
+        "가능한 원인 2",
+        "가능한 원인 3"
+    ],
+    "suggestions": [
+        "대안적 검색 방법이나 키워드 제안 1",
+        "대안적 검색 방법이나 키워드 제안 2"
+    ],
+    "alternative_keywords": ["추천 검색어 1", "추천 검색어 2", "추천 검색어 3"],
+    "explanation": "사용자가 이해할 수 있도록 상황을 친절하게 설명"
+}}
+
+## 주요 검색 실패 원인 유형 참고
+1. 검색어가 너무 구체적/특수함 (예: 희귀한 사건 유형)
+2. 검색어가 너무 일반적/광범위함
+3. 법령/판례가 아직 공개되지 않음
+4. 해당 분야에 관련 판례나 해석이 없음
+5. 검색어 표현이 법률 용어와 다름
+6. 최신 이슈로 아직 법적 자료가 축적되지 않음
+7. 지방조례, 내부지침 등 공개 데이터가 아닌 영역"""
+
+            response = client.chat.completions.create(
+                model="gpt-5.1",
+                messages=[
+                    {"role": "system", "content": "당신은 법률 검색 전문가입니다. 검색 실패 원인을 친절하게 분석합니다. JSON 형식으로만 응답합니다."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_completion_tokens=600
+            )
+
+            result_text = response.choices[0].message.content.strip()
+            logger.info(f"검색 실패 분석 응답: {result_text[:300]}")
+
+            # JSON 파싱
+            try:
+                if '```json' in result_text:
+                    json_str = result_text.split('```json')[1].split('```')[0].strip()
+                elif '```' in result_text:
+                    json_str = result_text.split('```')[1].split('```')[0].strip()
+                elif result_text.startswith('{'):
+                    json_str = result_text
+                else:
+                    start_idx = result_text.find('{')
+                    end_idx = result_text.rfind('}') + 1
+                    if start_idx >= 0 and end_idx > start_idx:
+                        json_str = result_text[start_idx:end_idx]
+                    else:
+                        raise ValueError("JSON 형식을 찾을 수 없음")
+
+                result = json.loads(json_str)
+                result['search_queries_tried'] = search_queries
+                return result
+
+            except (json.JSONDecodeError, ValueError) as e:
+                logger.warning(f"검색 실패 분석 JSON 파싱 실패: {e}")
+                default_analysis['explanation'] = result_text[:500]
+                return default_analysis
+
+        except Exception as e:
+            logger.error(f"검색 실패 분석 오류: {e}")
+            return default_analysis
+
     def verify_search_results(self, user_query: str, ai_analysis: Dict, results: List[Dict], category: str) -> List[Dict]:
         """AI를 사용하여 검색 결과의 관련성을 검증하고 필터링
 
@@ -1152,8 +1272,7 @@ class LegalAIEngine:
 
         검색 모드:
         1. case_number: 사건번호/안건번호 직접 검색
-        2. case_search: AI 의도 분석 → 대량 수집 → AI 필터링
-        3. keyword: 단순 키워드 검색 (AI 분석 없음)
+        2. case_search: AI 의도 분석 → 여러 방면으로 대량 수집 → AI 필터링
         """
         if search_options is None:
             search_options = {
@@ -1172,11 +1291,7 @@ class LegalAIEngine:
         if search_mode == 'case_number':
             return await self._search_by_case_number_mode(query, search_options)
 
-        # 검색어 검색 모드: AI 분석 없이 단순 키워드 검색
-        if search_mode == 'keyword':
-            return await self._search_by_keyword_mode(query, search_options)
-
-        # 사건 검색 모드 (case_search): AI 분석 → 대량 수집 → AI 필터링
+        # 사건 검색 모드: AI 의도 분석 → 여러 방면으로 대량 수집 → AI 필터링
         return await self._search_by_case_search_mode(query, search_options)
 
     async def _search_by_case_number_mode(self, query: str, search_options: Dict) -> Dict:
@@ -1390,8 +1505,17 @@ class LegalAIEngine:
                     if items:
                         total_count += len(items)
         logger.info(f"총 수집 결과: {total_count}건")
+        results['total_collected'] = total_count
 
-        # 4. AI 필터링 적용 (결과가 많은 경우)
+        # 4. 검색 결과가 없는 경우 AI가 원인 분석
+        if total_count == 0:
+            logger.info("검색 결과 없음 - AI 원인 분석 시작...")
+            no_result_analysis = self._analyze_no_results(query, ai_analysis, all_queries, search_options)
+            results['no_result_analysis'] = no_result_analysis
+            logger.info(f"검색 실패 원인 분석 완료")
+            return results
+
+        # 5. AI 필터링 적용 (결과가 많은 경우)
         if total_count > 15:
             logger.info("AI 필터링 시작...")
             results = self.filter_results_with_ai(query, results, max_results=15)
@@ -3312,6 +3436,54 @@ def display_download_section(legal_data: Dict, engine: LegalAIEngine):
 
             st.success(f"✅ {len(downloaded_docs)}건의 문서 준비 완료!")
 
+def display_no_result_analysis(legal_data: Dict):
+    """검색 결과가 없을 때 AI 분석 결과 표시"""
+    analysis = legal_data.get('no_result_analysis')
+    if not analysis:
+        return
+
+    st.markdown("---")
+    st.markdown("## ⚠️ 검색 결과 없음")
+
+    # 문제 요약
+    problem_summary = analysis.get('problem_summary', '검색 결과를 찾을 수 없습니다.')
+    st.warning(problem_summary)
+
+    # 상세 설명
+    explanation = analysis.get('explanation', '')
+    if explanation:
+        st.info(explanation)
+
+    # 가능한 원인
+    possible_reasons = analysis.get('possible_reasons', [])
+    if possible_reasons:
+        st.markdown("### 🔍 가능한 원인")
+        for reason in possible_reasons:
+            st.markdown(f"- {reason}")
+
+    # 제안사항
+    suggestions = analysis.get('suggestions', [])
+    if suggestions:
+        st.markdown("### 💡 제안사항")
+        for suggestion in suggestions:
+            st.markdown(f"- {suggestion}")
+
+    # 추천 검색어
+    alt_keywords = analysis.get('alternative_keywords', [])
+    if alt_keywords:
+        st.markdown("### 🔑 추천 검색어")
+        cols = st.columns(min(len(alt_keywords), 4))
+        for idx, keyword in enumerate(alt_keywords[:4]):
+            with cols[idx]:
+                st.code(keyword)
+
+    # 시도한 검색 쿼리 (접혀있는 상태로)
+    queries_tried = analysis.get('search_queries_tried', [])
+    if queries_tried:
+        with st.expander("📋 시도한 검색어 목록", expanded=False):
+            for q in queries_tried:
+                st.text(f"• {q}")
+
 def display_search_statistics(fact_sheet: Dict, engine: LegalAIEngine):
     """검색 결과 통계 표시"""
     stats = fact_sheet.get('statistics', {})
@@ -3826,7 +3998,7 @@ def main():
                 <strong>⚖️ AI 변호사 (GPT-5):</strong><br>
                 안녕하세요, AI 변호사입니다.<br><br>
 
-                <b>🔍 3가지 검색 모드를 제공합니다:</b><br><br>
+                <b>🔍 2가지 검색 모드를 제공합니다:</b><br><br>
 
                 <b>📋 사건번호 검색</b><br>
                 법원 사건번호나 안건번호를 알고 있을 때 직접 검색합니다.<br>
@@ -3834,14 +4006,10 @@ def main():
                 • 법령해석례: 18-0701, 22-0123<br>
                 • 행정심판례: 2023-12345<br><br>
 
-                <b>🤖 사건 검색 (AI)</b><br>
-                법률 질문을 자유롭게 입력하면 AI가 의도를 분석하고,<br>
-                관련 자료를 최대한 수집한 후 의미있는 자료만 필터링합니다.<br>
-                예: "부당해고를 당했는데 어떻게 해야 하나요?"<br><br>
-
-                <b>🔤 검색어 검색</b><br>
-                단순 키워드로 빠르게 검색합니다. AI 분석 없이 결과만 표시됩니다.<br>
-                예: "부당해고", "임대차보호법"<br><br>
+                <b>🤖 사건 검색</b><br>
+                법률 질문이나 키워드를 입력하면 AI가 의도를 분석하고,<br>
+                여러 방면으로 관련 자료를 최대한 수집한 후 의미있는 자료만 필터링합니다.<br>
+                예: "부당해고를 당했는데 어떻게 해야 하나요?" 또는 "부당해고"<br><br>
 
                 <b>📚 검색 가능한 데이터:</b><br>
                 법령, 판례, 법령해석례, 행정심판례, 헌재결정례, 위원회 결정문 등<br><br>
@@ -3860,28 +4028,24 @@ def main():
         st.markdown("### 🔍 검색 모드 선택")
         search_mode = st.radio(
             "검색 방식을 선택하세요",
-            options=['case_number', 'case_search', 'keyword'],
+            options=['case_number', 'case_search'],
             format_func=lambda x: {
                 'case_number': '📋 사건번호 검색 - 법원 사건번호, 안건번호로 직접 검색',
-                'case_search': '🤖 사건 검색 (AI) - 법률 질문을 AI가 분석하여 관련 자료 수집 및 필터링',
-                'keyword': '🔤 검색어 검색 - 키워드 기반 단순 검색'
+                'case_search': '🤖 사건 검색 - 질문/키워드를 AI가 분석하여 관련 자료 수집 및 필터링'
             }[x],
             horizontal=False,
             key='search_mode',
             help="""
             • 사건번호 검색: 2020다12345, 18-0701 등 사건번호/안건번호를 직접 입력하여 검색
-            • 사건 검색: AI가 질문을 분석하고, 관련 자료를 최대한 수집한 후 의미있는 자료만 필터링하여 답변
-            • 검색어 검색: 단순 키워드 검색 (AI 분석 없음)
+            • 사건 검색: AI가 질문이나 키워드를 분석하고, 여러 방면으로 자료를 최대한 수집한 후 의미있는 자료만 필터링하여 답변
             """
         )
 
         # 검색 모드에 따른 안내 메시지
         if search_mode == 'case_number':
             st.info("📋 **사건번호 검색**: 법원 사건번호(2020다12345) 또는 안건번호(18-0701)를 입력하세요.")
-        elif search_mode == 'case_search':
-            st.info("🤖 **사건 검색**: 법률 질문을 자유롭게 입력하세요. AI가 의도를 파악하고 관련 자료를 수집·분석합니다.")
         else:
-            st.info("🔤 **검색어 검색**: 검색할 키워드를 입력하세요.")
+            st.info("🤖 **사건 검색**: 법률 질문이나 검색 키워드를 입력하세요. AI가 의도를 파악하고 여러 방면으로 자료를 수집·분석합니다.")
 
         st.divider()
 
@@ -3896,19 +4060,12 @@ def main():
                 "18-0701": "18-0701",
                 "22-0123": "22-0123"
             }
-        elif search_mode == 'case_search':
+        else:
             examples = {
                 "부당해고 구제": "회사에서 정당한 사유 없이 해고를 당했습니다. 어떻게 구제받을 수 있나요?",
                 "임대차 분쟁": "전세 보증금을 돌려받지 못하고 있습니다. 임차인으로서 어떤 권리가 있나요?",
-                "개인정보 침해": "회사가 내 개인정보를 동의 없이 제3자에게 제공했습니다. 손해배상 청구가 가능한가요?",
-                "공정거래 위반": "경쟁사와 담합 혐의로 조사를 받게 되었습니다. 어떤 법적 대응이 필요한가요?"
-            }
-        else:
-            examples = {
-                "부당해고": "부당해고",
-                "임대차보호법": "임대차보호법",
-                "개인정보": "개인정보",
-                "손해배상": "손해배상"
+                "개인정보 침해": "개인정보 침해 손해배상",
+                "부당해고": "부당해고"
             }
 
         clicked_example = None
@@ -4035,14 +4192,20 @@ def main():
     # 검색 결과 상세 표시 (판례, 유권해석 등)
     if st.session_state.search_results:
         engine = LegalAIEngine()
-        st.markdown("---")
-        st.markdown("## 📑 검색된 법률 자료")
-        # fact_sheet에서 쿼리 가져오기
-        current_query = st.session_state.fact_sheet.get('query', '') if st.session_state.fact_sheet else ''
-        display_search_results_detail(st.session_state.search_results, engine, query=current_query)
 
-        # 다운로드 섹션 표시
-        display_download_section(st.session_state.search_results, engine)
+        # 검색 결과 없음 분석이 있는 경우
+        if st.session_state.search_results.get('no_result_analysis'):
+            display_no_result_analysis(st.session_state.search_results)
+        else:
+            # 정상적인 검색 결과 표시
+            st.markdown("---")
+            st.markdown("## 📑 검색된 법률 자료")
+            # fact_sheet에서 쿼리 가져오기
+            current_query = st.session_state.fact_sheet.get('query', '') if st.session_state.fact_sheet else ''
+            display_search_results_detail(st.session_state.search_results, engine, query=current_query)
+
+            # 다운로드 섹션 표시
+            display_download_section(st.session_state.search_results, engine)
 
     # 검색 통계 표시
     if st.session_state.fact_sheet:
