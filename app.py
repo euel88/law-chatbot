@@ -23,6 +23,20 @@ from openai import OpenAI
 import logging
 from enum import Enum
 import re
+import io
+import base64
+
+# PDF 생성 모듈 (선택적 import)
+try:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import mm
+    REPORTLAB_AVAILABLE = True
+except ImportError:
+    REPORTLAB_AVAILABLE = False
 
 # PDF 번역 모듈 (선택적 import)
 try:
@@ -1154,18 +1168,51 @@ class LegalAIEngine:
         # 1. 사건번호/안건번호 패턴 감지
         case_info = self.detect_case_number(query)
         case_number_results = {}
+        is_case_number_only = False  # 사건번호만 입력된 경우 플래그
 
         if case_info.get('type'):
             logger.info(f"=== 사건번호/안건번호 감지 ===")
             logger.info(f"유형: {case_info['type']}, 번호: {case_info['case_numbers']}")
             # 사건번호로 직접 검색
             case_number_results = await self.search_by_case_number(case_info)
-            logger.info(f"사건번호 검색 결과: {sum(len(v) for v in case_number_results.values())}건")
+            case_count = sum(len(v) for v in case_number_results.values())
+            logger.info(f"사건번호 검색 결과: {case_count}건")
+
+            # 사건번호만 입력된 경우 판단 (다른 키워드가 거의 없는 경우)
+            # 사건번호 패턴을 제거한 후 남은 텍스트가 법원명 등만 있는지 확인
+            remaining_text = query
+            for case_no in case_info['case_numbers']:
+                remaining_text = remaining_text.replace(case_no, '')
+            # 법원명, 공백, 기타 짧은 키워드만 남은 경우
+            court_names = ['대법원', '고등법원', '지방법원', '행정법원', '가정법원',
+                          '서울', '부산', '대구', '인천', '광주', '대전', '울산', '수원', '청주']
+            for court in court_names:
+                remaining_text = remaining_text.replace(court, '')
+            remaining_text = remaining_text.strip()
+            # 남은 텍스트가 거의 없으면 사건번호 전용 검색
+            if len(remaining_text) <= 5:
+                is_case_number_only = True
+                logger.info("사건번호 전용 검색 모드 활성화")
 
         # 2. AI를 사용하여 질의 의도 분석 및 검색 키워드 생성
-        ai_analysis = self.analyze_query_with_ai(query)
-        keywords = ai_analysis.get('keywords', [])
-        search_queries = ai_analysis.get('search_queries', [query])
+        # 사건번호만 입력된 경우 AI 분석 생략
+        if is_case_number_only:
+            ai_analysis = {
+                'intent': '특정 사건번호 검색',
+                'legal_issues': [],
+                'law_names': [],
+                'keywords': case_info.get('case_numbers', []),
+                'search_queries': case_info.get('case_numbers', []),
+                'search_priority': {'laws': False, 'precedents': True, 'interpretations': True,
+                                   'committee_decisions': False, 'ministry_opinions': False},
+                'recommended_sources': [case_info.get('type', 'prec')]
+            }
+            keywords = case_info.get('case_numbers', [])
+            search_queries = []  # 일반 검색 쿼리는 빈 리스트
+        else:
+            ai_analysis = self.analyze_query_with_ai(query)
+            keywords = ai_analysis.get('keywords', [])
+            search_queries = ai_analysis.get('search_queries', [query])
         law_names = ai_analysis.get('law_names', [])
         legal_issues = ai_analysis.get('legal_issues', [])
         search_priority = ai_analysis.get('search_priority', {})
@@ -1188,44 +1235,49 @@ class LegalAIEngine:
             'law_names': law_names,
             'search_time': datetime.now().isoformat(),
             'case_info': case_info,  # 사건번호 정보 추가
+            'is_case_number_only': is_case_number_only,  # 사건번호 전용 검색 여부
             'basic': {},
             'committees': {},
             'ministries': {},
             'special_tribunals': {}
         }
 
-        # AI가 생성한 검색 쿼리 사용 (없으면 원본 쿼리 사용)
-        primary_query = search_queries[0] if search_queries else query
-        # 추가 검색어도 활용 (최대 3개)
-        additional_queries = search_queries[1:4] if len(search_queries) > 1 else []
+        # 사건번호 전용 검색 모드일 때는 일반 키워드 검색 건너뜀
+        if not is_case_number_only:
+            # AI가 생성한 검색 쿼리 사용 (없으면 원본 쿼리 사용)
+            primary_query = search_queries[0] if search_queries else query
+            # 추가 검색어도 활용 (최대 3개)
+            additional_queries = search_queries[1:4] if len(search_queries) > 1 else []
 
-        tasks = []
+            tasks = []
 
-        # 기본 법률 데이터 검색 (AI 생성 검색어 기반)
-        if search_options.get('basic', True):
-            tasks.append(('basic', self.search_basic_legal_data(primary_query, search_queries)))
+            # 기본 법률 데이터 검색 (AI 생성 검색어 기반)
+            if search_options.get('basic', True):
+                tasks.append(('basic', self.search_basic_legal_data(primary_query, search_queries)))
 
-        # 위원회 결정문 검색 (AI가 추천하거나 사용자가 선택한 경우)
-        committees = search_options.get('committees', [])
-        if committees:
-            tasks.append(('committees', self.search_committee_decisions(primary_query, committees)))
+            # 위원회 결정문 검색 (AI가 추천하거나 사용자가 선택한 경우)
+            committees = search_options.get('committees', [])
+            if committees:
+                tasks.append(('committees', self.search_committee_decisions(primary_query, committees)))
 
-        # 부처별 법령해석 검색 (AI가 추천하거나 사용자가 선택한 경우)
-        ministries = search_options.get('ministries', [])
-        if ministries:
-            tasks.append(('ministries', self.search_ministry_interpretations(primary_query, ministries)))
+            # 부처별 법령해석 검색 (AI가 추천하거나 사용자가 선택한 경우)
+            ministries = search_options.get('ministries', [])
+            if ministries:
+                tasks.append(('ministries', self.search_ministry_interpretations(primary_query, ministries)))
 
-        # 특별행정심판례 검색
-        if search_options.get('special_tribunals', False):
-            tasks.append(('special_tribunals', self.search_special_tribunals(primary_query)))
+            # 특별행정심판례 검색
+            if search_options.get('special_tribunals', False):
+                tasks.append(('special_tribunals', self.search_special_tribunals(primary_query)))
 
-        # 병렬 실행
-        for key, task in tasks:
-            try:
-                results[key] = await task
-            except Exception as e:
-                logger.error(f"검색 오류 ({key}): {e}")
-                results[key] = {}
+            # 병렬 실행
+            for key, task in tasks:
+                try:
+                    results[key] = await task
+                except Exception as e:
+                    logger.error(f"검색 오류 ({key}): {e}")
+                    results[key] = {}
+        else:
+            logger.info("사건번호 전용 검색: 일반 키워드 검색 건너뜀")
 
         # 사건번호 검색 결과를 basic에 병합 (중복 제거)
         if case_number_results:
@@ -1315,6 +1367,388 @@ class LegalAIEngine:
         except Exception as e:
             logger.error(f"상세 조회 오류: {e}")
         return {}
+
+    def format_document_as_markdown(self, detail_data: Dict, target: str) -> str:
+        """상세 정보를 마크다운 형식으로 변환"""
+        if not detail_data:
+            return ""
+
+        # 응답 데이터 파싱 (중첩 구조 처리)
+        data = detail_data
+        if isinstance(detail_data, dict):
+            # JSON 응답 구조에 따라 데이터 추출
+            for key in ['prec', 'expc', 'decc', 'detc', 'PrecService', 'ExpcService', 'DeccService', 'DetcService']:
+                if key in detail_data:
+                    data = detail_data[key]
+                    break
+
+        md_content = []
+
+        if target == 'prec':  # 판례
+            title = self._get_value(data, '사건명', 'caseName', '제목')
+            case_no = self._get_value(data, '사건번호', 'caseNo')
+            court = self._get_value(data, '법원명', 'courtName')
+            date = self._get_value(data, '선고일자', 'judgmentDate')
+            case_type = self._get_value(data, '사건종류명', 'caseTypeName')
+            verdict_type = self._get_value(data, '판결유형', 'verdictType')
+
+            md_content.append(f"# {title or '판례'}")
+            md_content.append("")
+            md_content.append("## 기본 정보")
+            md_content.append(f"- **사건번호**: {case_no or '-'}")
+            md_content.append(f"- **법원**: {court or '-'}")
+            md_content.append(f"- **선고일자**: {date or '-'}")
+            md_content.append(f"- **사건종류**: {case_type or '-'}")
+            md_content.append(f"- **판결유형**: {verdict_type or '-'}")
+            md_content.append("")
+
+            # 판시사항
+            summary = self._get_value(data, '판시사항', 'judgmentSummary')
+            if summary:
+                md_content.append("## 판시사항")
+                md_content.append(self._clean_html(summary))
+                md_content.append("")
+
+            # 판결요지
+            gist = self._get_value(data, '판결요지', 'judgmentGist')
+            if gist:
+                md_content.append("## 판결요지")
+                md_content.append(self._clean_html(gist))
+                md_content.append("")
+
+            # 참조조문
+            ref_law = self._get_value(data, '참조조문', 'referenceLaw')
+            if ref_law:
+                md_content.append("## 참조조문")
+                md_content.append(self._clean_html(ref_law))
+                md_content.append("")
+
+            # 참조판례
+            ref_prec = self._get_value(data, '참조판례', 'referencePrec')
+            if ref_prec:
+                md_content.append("## 참조판례")
+                md_content.append(self._clean_html(ref_prec))
+                md_content.append("")
+
+            # 판례내용 (본문)
+            content = self._get_value(data, '판례내용', 'judgmentContent', 'content')
+            if content:
+                md_content.append("## 판례 본문")
+                md_content.append(self._clean_html(content))
+                md_content.append("")
+
+        elif target == 'expc':  # 법령해석례
+            title = self._get_value(data, '안건명', 'title', '제목')
+            case_no = self._get_value(data, '안건번호', 'caseNo')
+            org = self._get_value(data, '해석기관명', '회신기관명', 'replyOrg')
+            date = self._get_value(data, '해석일자', '회신일자', 'replyDate')
+            query_org = self._get_value(data, '질의기관명', 'queryOrg')
+
+            md_content.append(f"# {title or '법령해석례'}")
+            md_content.append("")
+            md_content.append("## 기본 정보")
+            md_content.append(f"- **안건번호**: {case_no or '-'}")
+            md_content.append(f"- **해석기관**: {org or '-'}")
+            md_content.append(f"- **질의기관**: {query_org or '-'}")
+            md_content.append(f"- **해석일자**: {date or '-'}")
+            md_content.append("")
+
+            # 질의요지
+            query = self._get_value(data, '질의요지', 'queryGist')
+            if query:
+                md_content.append("## 질의요지")
+                md_content.append(self._clean_html(query))
+                md_content.append("")
+
+            # 회답
+            answer = self._get_value(data, '회답', 'answer')
+            if answer:
+                md_content.append("## 회답")
+                md_content.append(self._clean_html(answer))
+                md_content.append("")
+
+            # 이유
+            reason = self._get_value(data, '이유', 'reason')
+            if reason:
+                md_content.append("## 이유")
+                md_content.append(self._clean_html(reason))
+                md_content.append("")
+
+        elif target == 'decc':  # 행정심판례
+            title = self._get_value(data, '사건명', 'caseName', '제목')
+            case_no = self._get_value(data, '사건번호', 'caseNo')
+            ruling_type = self._get_value(data, '재결례유형명', 'rulingType')
+            ruling_date = self._get_value(data, '의결일자', 'decisionDate')
+            disp_date = self._get_value(data, '처분일자', 'dispositionDate')
+            disp_org = self._get_value(data, '처분청', 'dispositionOrg')
+            ruling_org = self._get_value(data, '재결청', 'rulingOrg')
+
+            md_content.append(f"# {title or '행정심판례'}")
+            md_content.append("")
+            md_content.append("## 기본 정보")
+            md_content.append(f"- **사건번호**: {case_no or '-'}")
+            md_content.append(f"- **재결유형**: {ruling_type or '-'}")
+            md_content.append(f"- **의결일자**: {ruling_date or '-'}")
+            md_content.append(f"- **처분일자**: {disp_date or '-'}")
+            md_content.append(f"- **처분청**: {disp_org or '-'}")
+            md_content.append(f"- **재결청**: {ruling_org or '-'}")
+            md_content.append("")
+
+            # 주문
+            order = self._get_value(data, '주문', 'mainText')
+            if order:
+                md_content.append("## 주문")
+                md_content.append(self._clean_html(order))
+                md_content.append("")
+
+            # 청구취지
+            purpose = self._get_value(data, '청구취지', 'claimPurpose')
+            if purpose:
+                md_content.append("## 청구취지")
+                md_content.append(self._clean_html(purpose))
+                md_content.append("")
+
+            # 이유
+            reason = self._get_value(data, '이유', 'reason')
+            if reason:
+                md_content.append("## 이유")
+                md_content.append(self._clean_html(reason))
+                md_content.append("")
+
+            # 재결요지
+            gist = self._get_value(data, '재결요지', 'rulingGist')
+            if gist:
+                md_content.append("## 재결요지")
+                md_content.append(self._clean_html(gist))
+                md_content.append("")
+
+        elif target == 'detc':  # 헌재결정례
+            title = self._get_value(data, '사건명', 'caseName', '결정명', '제목')
+            case_no = self._get_value(data, '사건번호', 'caseNo')
+            date = self._get_value(data, '종국일자', '선고일자', 'decisionDate')
+            result = self._get_value(data, '결정유형', '종국결과', 'decisionType')
+
+            md_content.append(f"# {title or '헌재결정례'}")
+            md_content.append("")
+            md_content.append("## 기본 정보")
+            md_content.append(f"- **사건번호**: {case_no or '-'}")
+            md_content.append(f"- **종국일자**: {date or '-'}")
+            md_content.append(f"- **결정유형**: {result or '-'}")
+            md_content.append("")
+
+            # 판시사항
+            summary = self._get_value(data, '판시사항', 'judgmentSummary')
+            if summary:
+                md_content.append("## 판시사항")
+                md_content.append(self._clean_html(summary))
+                md_content.append("")
+
+            # 결정요지
+            gist = self._get_value(data, '결정요지', 'decisionGist')
+            if gist:
+                md_content.append("## 결정요지")
+                md_content.append(self._clean_html(gist))
+                md_content.append("")
+
+            # 본문
+            content = self._get_value(data, '결정내용', '본문', 'content')
+            if content:
+                md_content.append("## 결정 본문")
+                md_content.append(self._clean_html(content))
+                md_content.append("")
+        else:
+            # 기타 문서 유형 (위원회 결정문 등)
+            title = self._get_value(data, '사건명', '안건명', 'caseName', 'title', '제목')
+            md_content.append(f"# {title or '법률 문서'}")
+            md_content.append("")
+
+            # 모든 필드를 순회하며 출력
+            for key, value in data.items():
+                if value and isinstance(value, str) and len(value) > 0:
+                    md_content.append(f"## {key}")
+                    md_content.append(self._clean_html(str(value)))
+                    md_content.append("")
+
+        return "\n".join(md_content)
+
+    def _clean_html(self, text: str) -> str:
+        """HTML 태그 제거 및 텍스트 정리"""
+        if not text:
+            return ""
+        # HTML 태그 제거
+        import re
+        text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
+        text = re.sub(r'<p\s*/?>', '\n', text, flags=re.IGNORECASE)
+        text = re.sub(r'</p>', '\n', text, flags=re.IGNORECASE)
+        text = re.sub(r'<[^>]+>', '', text)
+        # HTML 엔티티 변환
+        text = text.replace('&nbsp;', ' ')
+        text = text.replace('&lt;', '<')
+        text = text.replace('&gt;', '>')
+        text = text.replace('&amp;', '&')
+        text = text.replace('&quot;', '"')
+        # 연속된 공백/줄바꿈 정리
+        text = re.sub(r'\n\s*\n', '\n\n', text)
+        text = re.sub(r' +', ' ', text)
+        return text.strip()
+
+    def generate_pdf_content(self, markdown_content: str, title: str = "법률 문서") -> bytes:
+        """마크다운 내용을 PDF로 변환"""
+        if not REPORTLAB_AVAILABLE:
+            logger.warning("reportlab 모듈이 설치되지 않았습니다. PDF 생성을 건너뜁니다.")
+            return b""
+
+        buffer = io.BytesIO()
+
+        # PDF 문서 생성
+        doc = SimpleDocTemplate(
+            buffer,
+            pagesize=A4,
+            rightMargin=20*mm,
+            leftMargin=20*mm,
+            topMargin=20*mm,
+            bottomMargin=20*mm
+        )
+
+        # 한글 폰트 설정 시도
+        font_name = 'Helvetica'  # 기본 폰트
+        try:
+            # 시스템 한글 폰트 경로 시도
+            font_paths = [
+                '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
+                '/usr/share/fonts/nanum/NanumGothic.ttf',
+                '/System/Library/Fonts/AppleSDGothicNeo.ttc',
+                'C:/Windows/Fonts/malgun.ttf',
+                '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
+            ]
+            for font_path in font_paths:
+                if os.path.exists(font_path):
+                    pdfmetrics.registerFont(TTFont('KoreanFont', font_path))
+                    font_name = 'KoreanFont'
+                    break
+        except Exception as e:
+            logger.warning(f"한글 폰트 로드 실패: {e}, 기본 폰트 사용")
+
+        # 스타일 설정
+        styles = getSampleStyleSheet()
+
+        # 제목 스타일
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontName=font_name,
+            fontSize=16,
+            spaceAfter=12,
+            leading=20
+        )
+
+        # 섹션 헤더 스타일
+        heading_style = ParagraphStyle(
+            'CustomHeading',
+            parent=styles['Heading2'],
+            fontName=font_name,
+            fontSize=12,
+            spaceBefore=12,
+            spaceAfter=6,
+            leading=16
+        )
+
+        # 본문 스타일
+        body_style = ParagraphStyle(
+            'CustomBody',
+            parent=styles['Normal'],
+            fontName=font_name,
+            fontSize=10,
+            leading=14,
+            spaceAfter=8
+        )
+
+        # 컨텐츠 빌드
+        story = []
+
+        lines = markdown_content.split('\n')
+        for line in lines:
+            line = line.strip()
+            if not line:
+                story.append(Spacer(1, 6))
+            elif line.startswith('# '):
+                story.append(Paragraph(line[2:], title_style))
+            elif line.startswith('## '):
+                story.append(Paragraph(line[3:], heading_style))
+            elif line.startswith('- **'):
+                # 리스트 항목
+                story.append(Paragraph('• ' + line[2:], body_style))
+            else:
+                # 일반 텍스트
+                # XML 특수문자 이스케이프
+                escaped = line.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                try:
+                    story.append(Paragraph(escaped, body_style))
+                except Exception:
+                    # 파싱 오류 시 원본 텍스트 사용
+                    story.append(Paragraph(line, body_style))
+
+        try:
+            doc.build(story)
+        except Exception as e:
+            logger.error(f"PDF 생성 오류: {e}")
+            return b""
+
+        return buffer.getvalue()
+
+    async def get_documents_for_download(self, items: List[Dict], target: str) -> List[Dict]:
+        """여러 문서의 상세 정보를 가져와서 다운로드 형식으로 변환"""
+        results = []
+
+        for item in items:
+            # ID 추출
+            item_id = None
+            id_fields = ['판례일련번호', '법령해석례일련번호', '행정심판례일련번호',
+                        '헌재결정례일련번호', 'ID', 'id', '일련번호']
+            for field in id_fields:
+                if field in item:
+                    item_id = str(item[field])
+                    break
+
+            if not item_id:
+                continue
+
+            # 상세 정보 조회
+            detail = await self.get_detail(target, item_id)
+            if detail:
+                md_content = self.format_document_as_markdown(detail, target)
+
+                # 제목 추출
+                title = self._get_item_display(item, '사건명', '안건명', '제목', 'caseName', 'title')
+                case_no = self._get_value(item, '사건번호', '안건번호', 'caseNo')
+
+                results.append({
+                    'id': item_id,
+                    'title': title or f"{target}_{item_id}",
+                    'case_no': case_no or '',
+                    'target': target,
+                    'markdown': md_content,
+                    'detail': detail
+                })
+
+        return results
+
+    def merge_documents_as_markdown(self, documents: List[Dict]) -> str:
+        """여러 문서를 하나의 마크다운으로 병합"""
+        merged = []
+        merged.append("# 법률 문서 모음")
+        merged.append(f"\n생성일시: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        merged.append(f"\n문서 수: {len(documents)}건")
+        merged.append("\n---\n")
+
+        for idx, doc in enumerate(documents, 1):
+            merged.append(f"\n## 문서 {idx}: {doc.get('title', '제목 없음')}")
+            merged.append(f"사건번호: {doc.get('case_no', '-')}")
+            merged.append("\n---\n")
+            merged.append(doc.get('markdown', ''))
+            merged.append("\n\n---\n")
+
+        return "\n".join(merged)
 
     def create_fact_sheet(self, user_input: str, legal_data: Dict) -> Dict:
         """사실관계 정리"""
@@ -2244,6 +2678,203 @@ def display_search_results_detail(legal_data: Dict, engine: LegalAIEngine, query
                                         st.markdown(f"[상세]({full_link})")
                         st.markdown("---")
 
+def display_download_section(legal_data: Dict, engine: LegalAIEngine):
+    """문서 다운로드 섹션 표시"""
+    if not legal_data:
+        return
+
+    basic = legal_data.get('basic', {})
+
+    # 다운로드 가능한 문서 수집
+    download_targets = []
+    if basic.get('prec'):
+        download_targets.append(('prec', '판례', basic['prec']))
+    if basic.get('expc'):
+        download_targets.append(('expc', '법령해석례', basic['expc']))
+    if basic.get('decc'):
+        download_targets.append(('decc', '행정심판례', basic['decc']))
+    if basic.get('detc'):
+        download_targets.append(('detc', '헌재결정례', basic['detc']))
+
+    if not download_targets:
+        return
+
+    st.markdown("---")
+    st.markdown("### 📥 문서 다운로드")
+
+    # 다운로드 형식 선택
+    col1, col2 = st.columns(2)
+    with col1:
+        download_format = st.selectbox(
+            "다운로드 형식",
+            options=['markdown', 'pdf'],
+            format_func=lambda x: 'Markdown (.md)' if x == 'markdown' else 'PDF (.pdf)',
+            key='download_format'
+        )
+    with col2:
+        download_type = st.selectbox(
+            "다운로드 유형",
+            options=['individual', 'merge'],
+            format_func=lambda x: '개별 문서' if x == 'individual' else '병합 문서',
+            key='download_type'
+        )
+
+    # 문서 선택
+    st.markdown("#### 📋 다운로드할 문서 선택")
+
+    # 세션 상태에 선택된 문서 저장
+    if 'selected_docs' not in st.session_state:
+        st.session_state.selected_docs = {}
+
+    for target_code, target_name, items in download_targets:
+        with st.expander(f"{target_name} ({len(items)}건)", expanded=False):
+            # 전체 선택 체크박스
+            select_all_key = f"select_all_{target_code}"
+            select_all = st.checkbox(f"전체 선택", key=select_all_key)
+
+            for idx, item in enumerate(items[:20]):
+                # ID 추출
+                item_id = None
+                id_fields = ['판례일련번호', '법령해석례일련번호', '행정심판례일련번호',
+                            '헌재결정례일련번호', 'ID', 'id', '일련번호']
+                for field in id_fields:
+                    if field in item:
+                        item_id = str(item[field])
+                        break
+
+                if not item_id:
+                    continue
+
+                # 제목 추출
+                title = engine._get_item_display(item, '사건명', '안건명', '제목', 'caseName', 'title')
+                case_no = engine._get_value(item, '사건번호', '안건번호', 'caseNo')
+
+                doc_key = f"{target_code}_{item_id}"
+                default_value = select_all or st.session_state.selected_docs.get(doc_key, False)
+
+                if st.checkbox(
+                    f"{idx + 1}. {title or '제목 없음'} ({case_no or '-'})",
+                    value=default_value,
+                    key=f"doc_{doc_key}"
+                ):
+                    st.session_state.selected_docs[doc_key] = {
+                        'target': target_code,
+                        'id': item_id,
+                        'title': title,
+                        'case_no': case_no,
+                        'item': item
+                    }
+                else:
+                    if doc_key in st.session_state.selected_docs:
+                        del st.session_state.selected_docs[doc_key]
+
+    # 선택된 문서 수 표시
+    selected_count = len([k for k, v in st.session_state.selected_docs.items() if v])
+    st.info(f"선택된 문서: {selected_count}건")
+
+    # 다운로드 버튼
+    if st.button("📥 선택한 문서 다운로드", type="primary", disabled=selected_count == 0):
+        with st.spinner("문서를 가져오는 중..."):
+            # 선택된 문서들 가져오기
+            selected_items = [v for v in st.session_state.selected_docs.values() if v]
+
+            if not selected_items:
+                st.warning("다운로드할 문서를 선택해주세요.")
+                return
+
+            # 상세 정보 조회 및 변환
+            downloaded_docs = []
+            progress_bar = st.progress(0)
+
+            for idx, doc_info in enumerate(selected_items):
+                try:
+                    detail = asyncio.run(engine.get_detail(doc_info['target'], doc_info['id']))
+                    if detail:
+                        md_content = engine.format_document_as_markdown(detail, doc_info['target'])
+                        downloaded_docs.append({
+                            'id': doc_info['id'],
+                            'title': doc_info['title'] or f"문서_{doc_info['id']}",
+                            'case_no': doc_info['case_no'] or '',
+                            'target': doc_info['target'],
+                            'markdown': md_content
+                        })
+                except Exception as e:
+                    logger.error(f"문서 조회 실패: {e}")
+
+                progress_bar.progress((idx + 1) / len(selected_items))
+
+            if not downloaded_docs:
+                st.error("문서를 가져오는데 실패했습니다.")
+                return
+
+            # 다운로드 처리
+            if download_type == 'merge':
+                # 병합 다운로드
+                merged_content = engine.merge_documents_as_markdown(downloaded_docs)
+
+                if download_format == 'markdown':
+                    st.download_button(
+                        label="💾 병합 문서 다운로드 (MD)",
+                        data=merged_content,
+                        file_name=f"법률문서_병합_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+                        mime="text/markdown"
+                    )
+                else:
+                    pdf_content = engine.generate_pdf_content(merged_content, "법률 문서 모음")
+                    if pdf_content:
+                        st.download_button(
+                            label="💾 병합 문서 다운로드 (PDF)",
+                            data=pdf_content,
+                            file_name=f"법률문서_병합_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+                            mime="application/pdf"
+                        )
+                    else:
+                        st.warning("PDF 생성에 실패했습니다. Markdown으로 다운로드합니다.")
+                        st.download_button(
+                            label="💾 병합 문서 다운로드 (MD)",
+                            data=merged_content,
+                            file_name=f"법률문서_병합_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+                            mime="text/markdown"
+                        )
+            else:
+                # 개별 다운로드
+                st.markdown("#### 📁 개별 다운로드")
+                for doc in downloaded_docs:
+                    safe_title = re.sub(r'[<>:"/\\|?*]', '_', doc['title'][:30])
+
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        st.write(f"**{doc['title']}** ({doc['case_no']})")
+                    with col2:
+                        if download_format == 'markdown':
+                            st.download_button(
+                                label="📄 MD",
+                                data=doc['markdown'],
+                                file_name=f"{safe_title}.md",
+                                mime="text/markdown",
+                                key=f"dl_md_{doc['id']}"
+                            )
+                        else:
+                            pdf_content = engine.generate_pdf_content(doc['markdown'], doc['title'])
+                            if pdf_content:
+                                st.download_button(
+                                    label="📄 PDF",
+                                    data=pdf_content,
+                                    file_name=f"{safe_title}.pdf",
+                                    mime="application/pdf",
+                                    key=f"dl_pdf_{doc['id']}"
+                                )
+                            else:
+                                st.download_button(
+                                    label="📄 MD",
+                                    data=doc['markdown'],
+                                    file_name=f"{safe_title}.md",
+                                    mime="text/markdown",
+                                    key=f"dl_md_fallback_{doc['id']}"
+                                )
+
+            st.success(f"✅ {len(downloaded_docs)}건의 문서 준비 완료!")
+
 def display_search_statistics(fact_sheet: Dict, engine: LegalAIEngine):
     """검색 결과 통계 표시"""
     stats = fact_sheet.get('statistics', {})
@@ -2327,6 +2958,7 @@ async def process_search(query: str, search_options: Dict):
 
         # 사건번호 검색 결과 표시
         case_info = legal_data.get('case_info', {})
+        is_case_number_only = legal_data.get('is_case_number_only', False)
         if case_info and case_info.get('type'):
             case_type_names = {
                 'prec': '판례',
@@ -2334,11 +2966,24 @@ async def process_search(query: str, search_options: Dict):
                 'decc': '행정심판례'
             }
             case_type_name = case_type_names.get(case_info['type'], case_info['type'])
-            st.info(f"🔢 **사건번호 감지:** {', '.join(case_info['case_numbers'])} ({case_type_name})")
 
-        # AI 분석 결과 표시
+            # 사건번호 검색 결과 확인
+            case_type = case_info['type']
+            case_results = basic.get(case_type, []) if basic else []
+
+            if case_results:
+                st.success(f"🔢 **사건번호 검색 성공:** {', '.join(case_info['case_numbers'])} ({case_type_name}) - {len(case_results)}건")
+            elif is_case_number_only:
+                st.warning(f"⚠️ **사건번호 검색 결과 없음:** {', '.join(case_info['case_numbers'])} ({case_type_name})\n\n"
+                          f"해당 사건번호의 {case_type_name}을(를) 법제처 데이터베이스에서 찾을 수 없습니다.\n"
+                          f"- 사건번호를 확인해주세요\n"
+                          f"- 최근 사건의 경우 아직 등록되지 않았을 수 있습니다")
+            else:
+                st.info(f"🔢 **사건번호 감지:** {', '.join(case_info['case_numbers'])} ({case_type_name}) - 직접 검색 결과 없음, 키워드 검색 결과 표시")
+
+        # AI 분석 결과 표시 (사건번호 전용 검색이 아닐 때만)
         ai_analysis = legal_data.get('ai_analysis', {})
-        if ai_analysis and ai_analysis.get('intent'):
+        if ai_analysis and ai_analysis.get('intent') and not is_case_number_only:
             with st.expander("🤖 AI 질의 분석 결과", expanded=True):
                 # 핵심 질문
                 core_question = ai_analysis.get('core_question', '')
@@ -2882,6 +3527,9 @@ def main():
         # fact_sheet에서 쿼리 가져오기
         current_query = st.session_state.fact_sheet.get('query', '') if st.session_state.fact_sheet else ''
         display_search_results_detail(st.session_state.search_results, engine, query=current_query)
+
+        # 다운로드 섹션 표시
+        display_download_section(st.session_state.search_results, engine)
 
     # 검색 통계 표시
     if st.session_state.fact_sheet:
