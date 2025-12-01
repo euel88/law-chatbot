@@ -1148,15 +1148,260 @@ class LegalAIEngine:
 
     async def comprehensive_search(self, query: str,
                                   search_options: Dict = None) -> Dict:
-        """종합 법률 검색 - AI 의도 분석 기반 검색 + 사건번호 직접 검색
+        """종합 법률 검색 - 검색 모드에 따른 분기 처리
 
-        AI가 사용자 질의를 분석하여:
-        1. 법적 쟁점 파악
-        2. 관련 법령, 판례, 유권해석 검색어 생성
-        3. 최적의 검색 소스 추천
-
-        사건번호/안건번호가 감지되면 직접 검색도 수행
+        검색 모드:
+        1. case_number: 사건번호/안건번호 직접 검색
+        2. case_search: AI 의도 분석 → 대량 수집 → AI 필터링
+        3. keyword: 단순 키워드 검색 (AI 분석 없음)
         """
+        if search_options is None:
+            search_options = {
+                'basic': True,
+                'committees': [],
+                'ministries': [],
+                'special_tribunals': True,
+                'search_mode': 'case_search'  # 기본값
+            }
+
+        # 검색 모드 확인
+        search_mode = search_options.get('search_mode', 'case_search')
+        logger.info(f"=== 검색 모드: {search_mode} ===")
+
+        # 사건번호 검색 모드: 사건번호로만 검색
+        if search_mode == 'case_number':
+            return await self._search_by_case_number_mode(query, search_options)
+
+        # 검색어 검색 모드: AI 분석 없이 단순 키워드 검색
+        if search_mode == 'keyword':
+            return await self._search_by_keyword_mode(query, search_options)
+
+        # 사건 검색 모드 (case_search): AI 분석 → 대량 수집 → AI 필터링
+        return await self._search_by_case_search_mode(query, search_options)
+
+    async def _search_by_case_number_mode(self, query: str, search_options: Dict) -> Dict:
+        """사건번호 검색 모드: 사건번호/안건번호로 직접 검색"""
+        logger.info("=== 사건번호 검색 모드 ===")
+
+        # 사건번호/안건번호 패턴 감지
+        case_info = self.detect_case_number(query)
+        case_number_results = {}
+
+        if case_info.get('type'):
+            logger.info(f"감지된 사건번호: {case_info['case_numbers']}")
+            case_number_results = await self.search_by_case_number(case_info)
+            case_count = sum(len(v) for v in case_number_results.values())
+            logger.info(f"검색 결과: {case_count}건")
+        else:
+            logger.warning("사건번호를 감지하지 못했습니다.")
+
+        results = {
+            'query': query,
+            'keywords': case_info.get('case_numbers', [query]),
+            'search_queries': [],
+            'ai_analysis': {
+                'intent': '사건번호 직접 검색',
+                'legal_issues': [],
+                'law_names': [],
+                'keywords': case_info.get('case_numbers', []),
+                'search_queries': [],
+                'search_priority': {},
+                'recommended_sources': [case_info.get('type', 'prec')]
+            },
+            'legal_issues': [],
+            'law_names': [],
+            'search_time': datetime.now().isoformat(),
+            'case_info': case_info,
+            'is_case_number_only': True,
+            'search_mode': 'case_number',
+            'basic': {},
+            'committees': {},
+            'ministries': {},
+            'special_tribunals': {}
+        }
+
+        # 사건번호 검색 결과를 basic에 추가
+        for case_type, items in case_number_results.items():
+            if items:
+                results['basic'][case_type] = items
+
+        return results
+
+    async def _search_by_keyword_mode(self, query: str, search_options: Dict) -> Dict:
+        """검색어 검색 모드: AI 분석 없이 단순 키워드 검색"""
+        logger.info("=== 검색어 검색 모드 ===")
+
+        results = {
+            'query': query,
+            'keywords': [query],
+            'search_queries': [query],
+            'ai_analysis': {
+                'intent': '키워드 검색',
+                'legal_issues': [],
+                'law_names': [],
+                'keywords': [query],
+                'search_queries': [query],
+                'search_priority': {},
+                'recommended_sources': []
+            },
+            'legal_issues': [],
+            'law_names': [],
+            'search_time': datetime.now().isoformat(),
+            'case_info': {},
+            'is_case_number_only': False,
+            'search_mode': 'keyword',
+            'basic': {},
+            'committees': {},
+            'ministries': {},
+            'special_tribunals': {}
+        }
+
+        tasks = []
+
+        # 기본 법률 데이터 검색
+        if search_options.get('basic', True):
+            tasks.append(('basic', self.search_basic_legal_data(query, [])))
+
+        # 위원회 결정문 검색
+        committees = search_options.get('committees', [])
+        if committees:
+            tasks.append(('committees', self.search_committee_decisions(query, committees)))
+
+        # 부처별 법령해석 검색
+        ministries = search_options.get('ministries', [])
+        if ministries:
+            tasks.append(('ministries', self.search_ministry_interpretations(query, ministries)))
+
+        # 특별행정심판례 검색
+        if search_options.get('special_tribunals', False):
+            tasks.append(('special_tribunals', self.search_special_tribunals(query)))
+
+        # 병렬 실행
+        for key, task in tasks:
+            try:
+                results[key] = await task
+            except Exception as e:
+                logger.error(f"검색 오류 ({key}): {e}")
+                results[key] = {}
+
+        return results
+
+    async def _search_by_case_search_mode(self, query: str, search_options: Dict) -> Dict:
+        """사건 검색 모드: AI 의도 분석 → 대량 수집 → AI 필터링"""
+        logger.info("=== 사건 검색 모드 (AI 분석 + 필터링) ===")
+
+        # 1. AI를 사용하여 질의 의도 분석 및 검색 키워드 생성
+        ai_analysis = self.analyze_query_with_ai(query)
+        keywords = ai_analysis.get('keywords', [])
+        search_queries = ai_analysis.get('search_queries', [query])
+        law_names = ai_analysis.get('law_names', [])
+        legal_issues = ai_analysis.get('legal_issues', [])
+        search_priority = ai_analysis.get('search_priority', {})
+        recommended_sources = ai_analysis.get('recommended_sources', [])
+
+        logger.info(f"=== AI 법률 검토 분석 결과 ===")
+        logger.info(f"의도: {ai_analysis.get('intent', '알 수 없음')}")
+        logger.info(f"법적 쟁점: {legal_issues}")
+        logger.info(f"관련 법령: {law_names}")
+        logger.info(f"검색 키워드: {keywords}")
+        logger.info(f"생성된 검색 쿼리: {search_queries}")
+
+        results = {
+            'query': query,
+            'keywords': keywords,
+            'search_queries': search_queries,
+            'ai_analysis': ai_analysis,
+            'legal_issues': legal_issues,
+            'law_names': law_names,
+            'search_time': datetime.now().isoformat(),
+            'case_info': {},
+            'is_case_number_only': False,
+            'search_mode': 'case_search',
+            'basic': {},
+            'committees': {},
+            'ministries': {},
+            'special_tribunals': {}
+        }
+
+        # 2. 대량 수집을 위한 확장 검색
+        # 원본 쿼리 + AI 생성 검색어로 최대한 많이 수집
+        all_queries = [query] + [q for q in search_queries if q != query][:5]
+        logger.info(f"확장 검색어: {all_queries}")
+
+        # 기본 법률 데이터 대량 검색
+        if search_options.get('basic', True):
+            for search_query in all_queries:
+                try:
+                    basic_results = await self.search_basic_legal_data(search_query, [], display_counts={
+                        'prec': 50, 'expc': 50, 'decc': 30, 'detc': 20,
+                        'law': 20, 'eflaw': 10, 'ordin': 10, 'treay': 5
+                    })
+                    # 결과 병합 (중복 제거)
+                    for key, items in basic_results.items():
+                        if items:
+                            if key not in results['basic']:
+                                results['basic'][key] = []
+                            existing_ids = set()
+                            for existing in results['basic'][key]:
+                                item_id = existing.get('판례일련번호', existing.get('법령해석례일련번호',
+                                            existing.get('행정심판례일련번호', existing.get('일련번호', ''))))
+                                if item_id:
+                                    existing_ids.add(str(item_id))
+                            for item in items:
+                                item_id = item.get('판례일련번호', item.get('법령해석례일련번호',
+                                            item.get('행정심판례일련번호', item.get('일련번호', ''))))
+                                if str(item_id) not in existing_ids:
+                                    results['basic'][key].append(item)
+                                    if item_id:
+                                        existing_ids.add(str(item_id))
+                except Exception as e:
+                    logger.error(f"기본 검색 오류: {e}")
+
+        # 위원회 결정문 검색
+        committees = search_options.get('committees', [])
+        if committees:
+            try:
+                committee_results = await self.search_committee_decisions(query, committees)
+                results['committees'] = committee_results
+            except Exception as e:
+                logger.error(f"위원회 검색 오류: {e}")
+
+        # 부처별 법령해석 검색
+        ministries = search_options.get('ministries', [])
+        if ministries:
+            try:
+                ministry_results = await self.search_ministry_interpretations(query, ministries)
+                results['ministries'] = ministry_results
+            except Exception as e:
+                logger.error(f"부처 검색 오류: {e}")
+
+        # 특별행정심판례 검색
+        if search_options.get('special_tribunals', False):
+            try:
+                results['special_tribunals'] = await self.search_special_tribunals(query)
+            except Exception as e:
+                logger.error(f"특별심판 검색 오류: {e}")
+
+        # 3. 수집된 결과 통계
+        total_count = 0
+        for key in ['basic', 'committees', 'ministries', 'special_tribunals']:
+            if results.get(key):
+                for items in results[key].values():
+                    if items:
+                        total_count += len(items)
+        logger.info(f"총 수집 결과: {total_count}건")
+
+        # 4. AI 필터링 적용 (결과가 많은 경우)
+        if total_count > 15:
+            logger.info("AI 필터링 시작...")
+            results = self.filter_results_with_ai(query, results, max_results=15)
+            logger.info(f"필터링 후 결과: {results.get('filtered_count', 0)}건")
+
+        return results
+
+    async def _comprehensive_search_legacy(self, query: str,
+                                  search_options: Dict = None) -> Dict:
+        """종합 법률 검색 - 기존 방식 (하위 호환용)"""
         if search_options is None:
             search_options = {
                 'basic': True,
@@ -2162,6 +2407,198 @@ class LegalAIEngine:
 
         return "\n".join(context_parts)
 
+    def filter_results_with_ai(self, query: str, legal_data: Dict, max_results: int = 10) -> Dict:
+        """AI를 사용하여 수집된 결과 중 관련성 높은 자료만 필터링
+
+        사건 검색 모드에서 사용:
+        1. 대량으로 수집된 결과를 AI가 분석
+        2. 질문과의 관련성을 평가
+        3. 가장 관련성 높은 결과만 반환
+        """
+        if not get_openai_api_key():
+            return legal_data
+
+        # 수집된 모든 결과 요약 생성
+        all_items = []
+
+        # 기본 데이터 수집
+        if legal_data.get('basic'):
+            for target_key, items in legal_data['basic'].items():
+                if items:
+                    target_name = self.basic_targets.get(target_key, {}).get('name', target_key)
+                    for idx, item in enumerate(items):
+                        title = self._get_item_display(item, '사건명', '안건명', '제목', 'caseName', 'title')
+                        case_no = self._get_value(item, '사건번호', '안건번호', 'caseNo')
+                        date = self._get_value(item, '선고일자', '회신일자', '의결일자', 'date')
+                        summary = self._get_value(item, '판시사항', '질의요지', '재결요지', 'summary')
+
+                        all_items.append({
+                            'source': 'basic',
+                            'target_key': target_key,
+                            'target_name': target_name,
+                            'index': idx,
+                            'title': title or '(제목 없음)',
+                            'case_no': case_no or '',
+                            'date': date or '',
+                            'summary': (summary[:200] + '...') if summary and len(summary) > 200 else (summary or ''),
+                            'item': item
+                        })
+
+        # 위원회 결정문
+        if legal_data.get('committees'):
+            for target_key, items in legal_data['committees'].items():
+                if items:
+                    target_name = self.committee_targets.get(target_key, {}).get('name', target_key)
+                    for idx, item in enumerate(items):
+                        title = self._get_item_display(item, '사건명', '제목', 'caseName', 'title')
+                        case_no = self._get_value(item, '사건번호', 'caseNo')
+                        date = self._get_value(item, '의결일자', '결정일자', 'date')
+                        summary = self._get_value(item, '결정요지', 'summary')
+
+                        all_items.append({
+                            'source': 'committees',
+                            'target_key': target_key,
+                            'target_name': target_name,
+                            'index': idx,
+                            'title': title or '(제목 없음)',
+                            'case_no': case_no or '',
+                            'date': date or '',
+                            'summary': (summary[:200] + '...') if summary and len(summary) > 200 else (summary or ''),
+                            'item': item
+                        })
+
+        # 부처별 법령해석
+        if legal_data.get('ministries'):
+            for target_key, items in legal_data['ministries'].items():
+                if items:
+                    target_name = self.ministry_targets.get(target_key, {}).get('name', target_key)
+                    for idx, item in enumerate(items):
+                        title = self._get_item_display(item, '안건명', '제목', 'title')
+                        case_no = self._get_value(item, '안건번호', 'caseNo')
+                        date = self._get_value(item, '회신일자', 'date')
+                        summary = self._get_value(item, '질의요지', 'summary')
+
+                        all_items.append({
+                            'source': 'ministries',
+                            'target_key': target_key,
+                            'target_name': target_name,
+                            'index': idx,
+                            'title': title or '(제목 없음)',
+                            'case_no': case_no or '',
+                            'date': date or '',
+                            'summary': (summary[:200] + '...') if summary and len(summary) > 200 else (summary or ''),
+                            'item': item
+                        })
+
+        if not all_items:
+            return legal_data
+
+        # AI에게 필터링 요청
+        items_text = ""
+        for i, item in enumerate(all_items[:100]):  # 최대 100개만 분석
+            items_text += f"\n[{i}] [{item['target_name']}] {item['title']}"
+            if item['case_no']:
+                items_text += f" ({item['case_no']})"
+            if item['date']:
+                items_text += f" - {item['date']}"
+            if item['summary']:
+                items_text += f"\n    요약: {item['summary']}"
+
+        filter_prompt = f"""당신은 법률 자료 필터링 전문가입니다.
+
+## 사용자 질문:
+{query}
+
+## 수집된 법률 자료 목록 (총 {len(all_items[:100])}건):
+{items_text}
+
+## 지시사항:
+1. 위 목록에서 사용자 질문과 가장 관련성이 높은 자료의 번호를 선택하세요.
+2. 최대 {max_results}개까지 선택할 수 있습니다.
+3. 관련성이 높은 순서대로 번호를 나열하세요.
+4. 각 선택에 대해 간단히 왜 관련성이 높은지 설명하세요.
+
+## 응답 형식 (JSON):
+{{
+    "selected_indices": [0, 5, 12, ...],
+    "reasoning": {{
+        "0": "이 판례는 부당해고 요건을 직접적으로 다루고 있어 가장 관련성이 높음",
+        "5": "임금 체불과 관련된 법령해석으로 질문과 관련됨",
+        ...
+    }},
+    "summary": "선택 이유 종합 설명"
+}}
+
+JSON 형식으로만 응답하세요."""
+
+        try:
+            client = get_openai_client()
+            if not client:
+                return legal_data
+
+            response = client.chat.completions.create(
+                model="gpt-5.1",
+                messages=[
+                    {"role": "system", "content": "당신은 법률 자료 관련성 평가 전문가입니다. JSON 형식으로만 응답하세요."},
+                    {"role": "user", "content": filter_prompt}
+                ],
+                max_completion_tokens=1500,
+                response_format={"type": "json_object"}
+            )
+
+            result_text = response.choices[0].message.content.strip()
+            filter_result = json.loads(result_text)
+            selected_indices = filter_result.get('selected_indices', [])
+
+            logger.info(f"AI 필터링 결과: {len(selected_indices)}건 선택됨")
+            logger.info(f"필터링 요약: {filter_result.get('summary', '')}")
+
+            # 선택된 인덱스에 해당하는 결과만 추출하여 새로운 legal_data 구성
+            filtered_data = {
+                'query': legal_data.get('query', query),
+                'keywords': legal_data.get('keywords', []),
+                'search_queries': legal_data.get('search_queries', []),
+                'ai_analysis': legal_data.get('ai_analysis', {}),
+                'legal_issues': legal_data.get('legal_issues', []),
+                'law_names': legal_data.get('law_names', []),
+                'search_time': legal_data.get('search_time', datetime.now().isoformat()),
+                'case_info': legal_data.get('case_info', {}),
+                'is_case_number_only': legal_data.get('is_case_number_only', False),
+                'filter_result': filter_result,  # 필터링 결과 저장
+                'original_count': len(all_items),  # 원본 결과 수
+                'filtered_count': len(selected_indices),  # 필터링된 결과 수
+                'basic': {},
+                'committees': {},
+                'ministries': {},
+                'special_tribunals': legal_data.get('special_tribunals', {})
+            }
+
+            # 선택된 항목들을 해당 카테고리에 다시 배치
+            for idx in selected_indices:
+                if 0 <= idx < len(all_items):
+                    item_info = all_items[idx]
+                    source = item_info['source']
+                    target_key = item_info['target_key']
+
+                    if source == 'basic':
+                        if target_key not in filtered_data['basic']:
+                            filtered_data['basic'][target_key] = []
+                        filtered_data['basic'][target_key].append(item_info['item'])
+                    elif source == 'committees':
+                        if target_key not in filtered_data['committees']:
+                            filtered_data['committees'][target_key] = []
+                        filtered_data['committees'][target_key].append(item_info['item'])
+                    elif source == 'ministries':
+                        if target_key not in filtered_data['ministries']:
+                            filtered_data['ministries'][target_key] = []
+                        filtered_data['ministries'][target_key].append(item_info['item'])
+
+            return filtered_data
+
+        except Exception as e:
+            logger.error(f"AI 필터링 오류: {e}")
+            return legal_data
+
     def _generate_fallback_response(self, query: str, legal_data: Dict) -> str:
         """API 키 없을 때 검색 결과 기반 기본 응답"""
         context = self._build_context(legal_data)
@@ -2922,8 +3359,17 @@ async def process_search(query: str, search_options: Dict):
     # 검색 상태 표시 영역
     status_container = st.container()
 
+    # 검색 모드 확인
+    search_mode = search_options.get('search_mode', 'case_search')
+    mode_names = {
+        'case_number': '📋 사건번호 검색',
+        'case_search': '🤖 사건 검색 (AI 분석)',
+        'keyword': '🔤 검색어 검색'
+    }
+    mode_name = mode_names.get(search_mode, '검색')
+
     with status_container:
-        st.info("🔍 법률 데이터 검색을 시작합니다...")
+        st.info(f"🔍 {mode_name} 모드로 검색을 시작합니다...")
         progress = st.progress(0)
 
         # API 키 확인
@@ -2932,8 +3378,16 @@ async def process_search(query: str, search_options: Dict):
             st.error("❌ 법제처 API 키가 설정되지 않았습니다. 사이드바에서 API 키를 입력해주세요.")
             return {}, {}, "법제처 API 키가 필요합니다.", engine
 
+        # 검색 모드별 진행 상태 메시지
+        if search_mode == 'case_number':
+            progress.progress(20, "사건번호로 직접 검색 중...")
+        elif search_mode == 'case_search':
+            progress.progress(10, "AI가 질문을 분석 중...")
+            progress.progress(20, "관련 자료 대량 수집 중...")
+        else:
+            progress.progress(20, "키워드로 검색 중...")
+
         # 1. 종합 검색
-        progress.progress(20, "법제처 데이터베이스 검색 중...")
         legal_data = await engine.comprehensive_search(query, search_options)
 
         # 검색 결과 요약 표시
@@ -2955,6 +3409,16 @@ async def process_search(query: str, search_options: Dict):
         else:
             st.warning("⚠️ 검색 결과가 없습니다. 다른 검색어로 시도해보세요.")
             progress.progress(50, "검색 결과 없음")
+
+        # AI 필터링 결과 표시 (사건 검색 모드에서만)
+        if search_mode == 'case_search' and legal_data.get('filter_result'):
+            original_count = legal_data.get('original_count', 0)
+            filtered_count = legal_data.get('filtered_count', 0)
+            filter_summary = legal_data['filter_result'].get('summary', '')
+            st.success(f"🤖 **AI 필터링 완료:** 수집된 {original_count}건 중 관련성 높은 {filtered_count}건 선별")
+            if filter_summary:
+                with st.expander("📊 AI 필터링 분석", expanded=False):
+                    st.markdown(f"**분석 요약:** {filter_summary}")
 
         # 사건번호 검색 결과 표시
         case_info = legal_data.get('case_info', {})
@@ -3362,23 +3826,27 @@ def main():
                 <strong>⚖️ AI 변호사 (GPT-5):</strong><br>
                 안녕하세요, AI 변호사입니다.<br><br>
 
-                <b>🔍 검색 가능한 법률 데이터:</b><br>
-                • <b>기본:</b> 법령, 판례, 행정규칙, 자치법규, 헌재결정례, 법령해석례, 행정심판례, 조약<br>
-                • <b>위원회 결정문:</b> 공정거래위원회, 노동위원회, 금융위원회 등 12개 위원회<br>
-                • <b>부처별 법령해석:</b> 고용노동부, 국토교통부 등 30개 이상 부처<br>
-                • <b>특별행정심판:</b> 조세심판원, 해양안전심판원 등<br><br>
+                <b>🔍 3가지 검색 모드를 제공합니다:</b><br><br>
 
-                <b>🔢 사건번호/안건번호 직접 검색:</b><br>
-                • <b>판례:</b> 2020다12345, 2021구합12345 형식<br>
-                • <b>법령해석례:</b> 18-0701, 22-0123 형식<br>
-                • <b>행정심판례:</b> 2023-12345 형식<br><br>
+                <b>📋 사건번호 검색</b><br>
+                법원 사건번호나 안건번호를 알고 있을 때 직접 검색합니다.<br>
+                • 판례: 2020다12345, 2021구합54321<br>
+                • 법령해석례: 18-0701, 22-0123<br>
+                • 행정심판례: 2023-12345<br><br>
 
-                <b>💡 사용 방법:</b><br>
-                1. 사이드바에서 API 키를 입력하세요<br>
-                2. 검색할 데이터 소스를 선택하세요<br>
-                3. 아래 입력창에 검색어 또는 사건번호를 입력하세요<br><br>
+                <b>🤖 사건 검색 (AI)</b><br>
+                법률 질문을 자유롭게 입력하면 AI가 의도를 분석하고,<br>
+                관련 자료를 최대한 수집한 후 의미있는 자료만 필터링합니다.<br>
+                예: "부당해고를 당했는데 어떻게 해야 하나요?"<br><br>
 
-                어떤 법률 자료를 찾아드릴까요?
+                <b>🔤 검색어 검색</b><br>
+                단순 키워드로 빠르게 검색합니다. AI 분석 없이 결과만 표시됩니다.<br>
+                예: "부당해고", "임대차보호법"<br><br>
+
+                <b>📚 검색 가능한 데이터:</b><br>
+                법령, 판례, 법령해석례, 행정심판례, 헌재결정례, 위원회 결정문 등<br><br>
+
+                아래에서 검색 모드를 선택하고 검색을 시작하세요!
             </div>
             """, unsafe_allow_html=True)
         else:
@@ -3388,16 +3856,60 @@ def main():
 
         st.divider()
 
-        # 예시 검색어
-        st.markdown("### 💡 예시 검색어")
+        # 검색 모드 선택
+        st.markdown("### 🔍 검색 모드 선택")
+        search_mode = st.radio(
+            "검색 방식을 선택하세요",
+            options=['case_number', 'case_search', 'keyword'],
+            format_func=lambda x: {
+                'case_number': '📋 사건번호 검색 - 법원 사건번호, 안건번호로 직접 검색',
+                'case_search': '🤖 사건 검색 (AI) - 법률 질문을 AI가 분석하여 관련 자료 수집 및 필터링',
+                'keyword': '🔤 검색어 검색 - 키워드 기반 단순 검색'
+            }[x],
+            horizontal=False,
+            key='search_mode',
+            help="""
+            • 사건번호 검색: 2020다12345, 18-0701 등 사건번호/안건번호를 직접 입력하여 검색
+            • 사건 검색: AI가 질문을 분석하고, 관련 자료를 최대한 수집한 후 의미있는 자료만 필터링하여 답변
+            • 검색어 검색: 단순 키워드 검색 (AI 분석 없음)
+            """
+        )
+
+        # 검색 모드에 따른 안내 메시지
+        if search_mode == 'case_number':
+            st.info("📋 **사건번호 검색**: 법원 사건번호(2020다12345) 또는 안건번호(18-0701)를 입력하세요.")
+        elif search_mode == 'case_search':
+            st.info("🤖 **사건 검색**: 법률 질문을 자유롭게 입력하세요. AI가 의도를 파악하고 관련 자료를 수집·분석합니다.")
+        else:
+            st.info("🔤 **검색어 검색**: 검색할 키워드를 입력하세요.")
+
+        st.divider()
+
+        # 예시 검색어 (모드별로 다르게 표시)
+        st.markdown("### 💡 예시")
         col1, col2, col3, col4 = st.columns(4)
 
-        examples = {
-            "부당해고 구제": "부당해고 구제 절차와 관련 판례",
-            "임대차 보증금": "주택임대차보호법 보증금 반환",
-            "개인정보 침해": "개인정보 침해 손해배상",
-            "18-0701": "18-0701"  # 법령해석례 안건번호 예시
-        }
+        if search_mode == 'case_number':
+            examples = {
+                "2020다12345": "2020다12345",
+                "2021구합54321": "2021구합54321",
+                "18-0701": "18-0701",
+                "22-0123": "22-0123"
+            }
+        elif search_mode == 'case_search':
+            examples = {
+                "부당해고 구제": "회사에서 정당한 사유 없이 해고를 당했습니다. 어떻게 구제받을 수 있나요?",
+                "임대차 분쟁": "전세 보증금을 돌려받지 못하고 있습니다. 임차인으로서 어떤 권리가 있나요?",
+                "개인정보 침해": "회사가 내 개인정보를 동의 없이 제3자에게 제공했습니다. 손해배상 청구가 가능한가요?",
+                "공정거래 위반": "경쟁사와 담합 혐의로 조사를 받게 되었습니다. 어떤 법적 대응이 필요한가요?"
+            }
+        else:
+            examples = {
+                "부당해고": "부당해고",
+                "임대차보호법": "임대차보호법",
+                "개인정보": "개인정보",
+                "손해배상": "손해배상"
+            }
 
         clicked_example = None
         for idx, (btn_text, query) in enumerate(examples.items()):
@@ -3485,7 +3997,8 @@ def main():
                     'basic': search_basic,
                     'committees': selected_committees,
                     'ministries': selected_ministries,
-                    'special_tribunals': search_special_tribunals
+                    'special_tribunals': search_special_tribunals,
+                    'search_mode': search_mode  # 검색 모드 추가
                 }
 
                 # 검색 실행
