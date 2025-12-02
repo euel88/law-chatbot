@@ -1405,6 +1405,25 @@ class LegalAIEngine:
         """사건 검색 모드: AI 의도 분석 → 대량 수집 → AI 필터링"""
         logger.info("=== 사건 검색 모드 (AI 분석 + 필터링) ===")
 
+        # 0. 먼저 사건번호/안건번호 패턴 감지 및 직접 검색
+        case_info = self.detect_case_number(query)
+        case_number_results = {}
+        case_number_serial_ids = set()  # 사건번호로 직접 검색된 결과 ID 저장 (필터링 제외용)
+
+        if case_info.get('type'):
+            logger.info(f"=== 사건번호 감지됨: {case_info['case_numbers']} ===")
+            case_number_results = await self.search_by_case_number(case_info)
+            case_count = sum(len(v) for v in case_number_results.values())
+            logger.info(f"사건번호 직접 검색 결과: {case_count}건")
+
+            # 사건번호로 검색된 결과의 ID 저장 (AI 필터링에서 제외하기 위해)
+            for case_type, items in case_number_results.items():
+                for item in items:
+                    serial_id = item.get('판례일련번호', item.get('법령해석례일련번호',
+                                item.get('행정심판례일련번호', item.get('일련번호', ''))))
+                    if serial_id:
+                        case_number_serial_ids.add(str(serial_id))
+
         # 1. AI를 사용하여 질의 의도 분석 및 검색 키워드 생성
         ai_analysis = self.analyze_query_with_ai(query)
         keywords = ai_analysis.get('keywords', [])
@@ -1429,14 +1448,22 @@ class LegalAIEngine:
             'legal_issues': legal_issues,
             'law_names': law_names,
             'search_time': datetime.now().isoformat(),
-            'case_info': {},
+            'case_info': case_info,
             'is_case_number_only': False,
             'search_mode': 'case_search',
             'basic': {},
             'committees': {},
             'ministries': {},
-            'special_tribunals': {}
+            'special_tribunals': {},
+            'case_number_serial_ids': list(case_number_serial_ids)  # 사건번호 검색 결과 ID 저장
         }
+
+        # 사건번호 직접 검색 결과를 basic에 먼저 추가
+        for case_type, items in case_number_results.items():
+            if items:
+                if case_type not in results['basic']:
+                    results['basic'][case_type] = []
+                results['basic'][case_type].extend(items)
 
         # 2. 대량 수집을 위한 확장 검색
         # 원본 쿼리 + AI 생성 검색어로 최대한 많이 수집
@@ -2535,12 +2562,19 @@ class LegalAIEngine:
         1. 대량으로 수집된 결과를 AI가 분석
         2. 질문과의 관련성을 평가
         3. 가장 관련성 높은 결과만 반환
+
+        주의: 사건번호로 직접 검색된 결과(case_number_serial_ids)는 필터링에서 제외하고 항상 포함
         """
         if not get_openai_api_key():
             return legal_data
 
+        # 사건번호로 직접 검색된 결과 ID (필터링 제외 대상)
+        case_number_serial_ids = set(legal_data.get('case_number_serial_ids', []))
+        logger.info(f"사건번호 검색 결과 ID (필터링 제외): {case_number_serial_ids}")
+
         # 수집된 모든 결과 요약 생성
         all_items = []
+        case_number_items = []  # 사건번호로 직접 검색된 결과 (필터링 제외)
 
         # 기본 데이터 수집
         if legal_data.get('basic'):
@@ -2553,7 +2587,11 @@ class LegalAIEngine:
                         date = self._get_value(item, '선고일자', '회신일자', '의결일자', 'date')
                         summary = self._get_value(item, '판시사항', '질의요지', '재결요지', 'summary')
 
-                        all_items.append({
+                        # 일련번호 추출
+                        serial_id = item.get('판례일련번호', item.get('법령해석례일련번호',
+                                    item.get('행정심판례일련번호', item.get('일련번호', ''))))
+
+                        item_info = {
                             'source': 'basic',
                             'target_key': target_key,
                             'target_name': target_name,
@@ -2562,8 +2600,16 @@ class LegalAIEngine:
                             'case_no': case_no or '',
                             'date': date or '',
                             'summary': (summary[:200] + '...') if summary and len(summary) > 200 else (summary or ''),
-                            'item': item
-                        })
+                            'item': item,
+                            'serial_id': str(serial_id) if serial_id else ''
+                        }
+
+                        # 사건번호로 직접 검색된 결과인지 확인
+                        if serial_id and str(serial_id) in case_number_serial_ids:
+                            case_number_items.append(item_info)
+                            logger.info(f"사건번호 검색 결과 (필터링 제외): {title} ({case_no})")
+                        else:
+                            all_items.append(item_info)
 
         # 위원회 결정문
         if legal_data.get('committees'):
@@ -2611,7 +2657,12 @@ class LegalAIEngine:
                             'item': item
                         })
 
-        if not all_items:
+        # 사건번호 직접 검색 결과만 있고 다른 결과가 없는 경우
+        if not all_items and case_number_items:
+            logger.info(f"사건번호 검색 결과 {len(case_number_items)}건만 존재 - 필터링 생략")
+            return legal_data
+
+        if not all_items and not case_number_items:
             return legal_data
 
         # AI에게 필터링 요청
@@ -2625,26 +2676,43 @@ class LegalAIEngine:
             if item['summary']:
                 items_text += f"\n    요약: {item['summary']}"
 
+        # 사건번호가 입력에 포함되어 있는지 확인하여 컨텍스트 제공
+        case_info = legal_data.get('case_info', {})
+        case_context = ""
+        if case_info.get('case_numbers'):
+            case_context = f"\n\n참고: 사용자가 특정 사건번호({', '.join(case_info['case_numbers'])})를 언급했습니다. 해당 사건과 직접적으로 관련된 자료를 우선 선택하세요."
+
         filter_prompt = f"""당신은 법률 자료 필터링 전문가입니다.
 
 ## 사용자 질문:
-{query}
+{query}{case_context}
 
 ## 수집된 법률 자료 목록 (총 {len(all_items[:100])}건):
 {items_text}
 
 ## 지시사항:
-1. 위 목록에서 사용자 질문과 가장 관련성이 높은 자료의 번호를 선택하세요.
-2. 최대 {max_results}개까지 선택할 수 있습니다.
-3. 관련성이 높은 순서대로 번호를 나열하세요.
-4. 각 선택에 대해 간단히 왜 관련성이 높은지 설명하세요.
+1. 사용자 질문의 **핵심 의도**를 먼저 파악하세요:
+   - 특정 사건번호를 찾는 경우: 해당 사건번호와 정확히 일치하거나 밀접하게 관련된 자료를 우선 선택
+   - 법적 쟁점을 묻는 경우: 해당 쟁점을 직접 다루는 자료 선택
+   - 일반적인 법률 질문: 관련 법령, 판례, 해석례 등 폭넓게 선택
+
+2. 위 목록에서 사용자 질문과 관련성이 높은 자료의 번호를 선택하세요.
+
+3. 선택 기준 (너무 엄격하게 필터링하지 마세요):
+   - 직접적으로 관련된 자료: 반드시 포함
+   - 간접적으로 관련된 자료: 참고할 가치가 있으면 포함
+   - 유사한 법적 쟁점을 다루는 자료: 포함 고려
+
+4. 최대 {max_results}개까지 선택할 수 있습니다.
+
+5. 관련성이 높은 순서대로 번호를 나열하세요.
 
 ## 응답 형식 (JSON):
 {{
     "selected_indices": [0, 5, 12, ...],
     "reasoning": {{
-        "0": "이 판례는 부당해고 요건을 직접적으로 다루고 있어 가장 관련성이 높음",
-        "5": "임금 체불과 관련된 법령해석으로 질문과 관련됨",
+        "0": "이 판례는 사용자가 찾는 사건번호와 일치함",
+        "5": "관련 법적 쟁점을 다루고 있어 참고 가치가 있음",
         ...
     }},
     "summary": "선택 이유 종합 설명"
@@ -2686,15 +2754,27 @@ JSON 형식으로만 응답하세요."""
                 'case_info': legal_data.get('case_info', {}),
                 'is_case_number_only': legal_data.get('is_case_number_only', False),
                 'filter_result': filter_result,  # 필터링 결과 저장
-                'original_count': len(all_items),  # 원본 결과 수
-                'filtered_count': len(selected_indices),  # 필터링된 결과 수
+                'original_count': len(all_items) + len(case_number_items),  # 원본 결과 수
+                'filtered_count': len(selected_indices) + len(case_number_items),  # 필터링된 결과 수 + 사건번호 검색 결과
+                'case_number_results_count': len(case_number_items),  # 사건번호 검색 결과 수
                 'basic': {},
                 'committees': {},
                 'ministries': {},
                 'special_tribunals': legal_data.get('special_tribunals', {})
             }
 
-            # 선택된 항목들을 해당 카테고리에 다시 배치
+            # 1. 먼저 사건번호 직접 검색 결과를 항상 포함 (필터링 제외)
+            for item_info in case_number_items:
+                source = item_info['source']
+                target_key = item_info['target_key']
+
+                if source == 'basic':
+                    if target_key not in filtered_data['basic']:
+                        filtered_data['basic'][target_key] = []
+                    filtered_data['basic'][target_key].append(item_info['item'])
+                    logger.info(f"사건번호 검색 결과 포함: {item_info['title']} ({item_info['case_no']})")
+
+            # 2. AI가 선택한 항목들을 해당 카테고리에 추가
             for idx in selected_indices:
                 if 0 <= idx < len(all_items):
                     item_info = all_items[idx]
