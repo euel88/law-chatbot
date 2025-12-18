@@ -51,6 +51,9 @@ nest_asyncio.apply()
 # 환경변수 로드
 load_dotenv()
 
+# 기본 OpenAI 모델 설정 (환경변수 OPENAI_MODEL로 재정의 가능)
+OPENAI_MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-5.2")
+
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -773,7 +776,7 @@ class LegalAIEngine:
 """
 
             response = client.chat.completions.create(
-                model="gpt-5.1",
+                model=OPENAI_MODEL_NAME,
                 messages=[
                     {"role": "system", "content": "당신은 한국 법률 검색 전문가입니다. JSON 형식으로만 응답합니다."},
                     {"role": "user", "content": prompt}
@@ -912,7 +915,7 @@ class LegalAIEngine:
 7. 지방조례, 내부지침 등 공개 데이터가 아닌 영역"""
 
             response = client.chat.completions.create(
-                model="gpt-5.1",
+                model=OPENAI_MODEL_NAME,
                 messages=[
                     {"role": "system", "content": "당신은 법률 검색 전문가입니다. 검색 실패 원인을 친절하게 분석합니다. JSON 형식으로만 응답합니다."},
                     {"role": "user", "content": prompt}
@@ -1015,7 +1018,7 @@ class LegalAIEngine:
 """
 
             response = client.chat.completions.create(
-                model="gpt-5.1",
+                model=OPENAI_MODEL_NAME,
                 messages=[
                     {"role": "system", "content": "법률 검색 결과 관련성 평가 전문가입니다. JSON 형식으로만 응답합니다."},
                     {"role": "user", "content": prompt}
@@ -1539,11 +1542,16 @@ class LegalAIEngine:
             logger.info(f"검색 실패 원인 분석 완료")
             return results
 
-        # 5. AI 필터링 적용 (결과가 많은 경우)
-        if total_count > 15:
-            logger.info("AI 필터링 시작...")
-            results = self.filter_results_with_ai(query, results, max_results=15)
-            logger.info(f"필터링 후 결과: {results.get('filtered_count', 0)}건")
+        # 5. AI 필터링 적용 (2단계: 관련성 낮은 자료 제거)
+        if total_count > 0:
+            logger.info("AI 필터링 시작 (2단계 정밀 필터링)...")
+            results = self.filter_results_with_ai(query, results, max_results=25)
+            logger.info(f"필터링 후 결과: {results.get('filtered_count', total_count)}건")
+            results['search_phase_stats'] = {
+                'phase1_collected': total_count,
+                'phase2_retained': results.get('filtered_count', total_count),
+                'ai_model': OPENAI_MODEL_NAME
+            }
 
         return results
 
@@ -2565,9 +2573,6 @@ class LegalAIEngine:
 
         주의: 사건번호로 직접 검색된 결과(case_number_serial_ids)는 필터링에서 제외하고 항상 포함
         """
-        if not get_openai_api_key():
-            return legal_data
-
         # 사건번호로 직접 검색된 결과 ID (필터링 제외 대상)
         case_number_serial_ids = set(legal_data.get('case_number_serial_ids', []))
         logger.info(f"사건번호 검색 결과 ID (필터링 제외): {case_number_serial_ids}")
@@ -2657,12 +2662,39 @@ class LegalAIEngine:
                             'item': item
                         })
 
+        total_candidates = len(all_items) + len(case_number_items)
+
         # 사건번호 직접 검색 결과만 있고 다른 결과가 없는 경우
         if not all_items and case_number_items:
             logger.info(f"사건번호 검색 결과 {len(case_number_items)}건만 존재 - 필터링 생략")
+            legal_data['filter_result'] = {
+                'summary': '사건번호 직접 검색 결과만 있어 AI 필터링을 생략했습니다.',
+                'selected_indices': [],
+            }
+            legal_data['original_count'] = total_candidates
+            legal_data['filtered_count'] = total_candidates
+            legal_data['case_number_results_count'] = len(case_number_items)
             return legal_data
 
         if not all_items and not case_number_items:
+            legal_data['filter_result'] = {
+                'summary': '필터링할 데이터가 없어 AI 필터링을 생략했습니다.',
+                'selected_indices': [],
+            }
+            legal_data['original_count'] = 0
+            legal_data['filtered_count'] = 0
+            legal_data['case_number_results_count'] = 0
+            return legal_data
+
+        if not get_openai_api_key():
+            logger.info("OpenAI API 키가 없어 AI 필터링을 건너뜁니다.")
+            legal_data['filter_result'] = {
+                'summary': 'OpenAI API 키가 없어 AI 필터링을 생략했습니다. 검색된 모든 결과를 표시합니다.',
+                'selected_indices': [],
+            }
+            legal_data['original_count'] = total_candidates
+            legal_data['filtered_count'] = total_candidates
+            legal_data['case_number_results_count'] = len(case_number_items)
             return legal_data
 
         # AI에게 필터링 요청
@@ -2723,10 +2755,17 @@ JSON 형식으로만 응답하세요."""
         try:
             client = get_openai_client()
             if not client:
+                legal_data['filter_result'] = {
+                    'summary': 'OpenAI 클라이언트를 초기화하지 못해 필터링을 생략했습니다.',
+                    'selected_indices': [],
+                }
+                legal_data['original_count'] = total_candidates
+                legal_data['filtered_count'] = total_candidates
+                legal_data['case_number_results_count'] = len(case_number_items)
                 return legal_data
 
             response = client.chat.completions.create(
-                model="gpt-5.1",
+                model=OPENAI_MODEL_NAME,
                 messages=[
                     {"role": "system", "content": "당신은 법률 자료 관련성 평가 전문가입니다. JSON 형식으로만 응답하세요."},
                     {"role": "user", "content": filter_prompt}
@@ -2798,6 +2837,13 @@ JSON 형식으로만 응답하세요."""
 
         except Exception as e:
             logger.error(f"AI 필터링 오류: {e}")
+            legal_data['filter_result'] = {
+                'summary': 'AI 필터링 과정에서 오류가 발생하여 원본 결과를 그대로 사용합니다.',
+                'selected_indices': [],
+            }
+            legal_data['original_count'] = total_candidates
+            legal_data['filtered_count'] = total_candidates
+            legal_data['case_number_results_count'] = len(case_number_items)
             return legal_data
 
     def _generate_fallback_response(self, query: str, legal_data: Dict) -> str:
@@ -2854,7 +2900,7 @@ AI 분석을 이용하시려면 사이드바에서 OpenAI API 키를 입력해�
             if not client:
                 return "AI 응답을 생성할 수 없습니다. OpenAI API 키를 확인해주세요."
             response = client.chat.completions.create(
-                model="gpt-5.1",
+                model=OPENAI_MODEL_NAME,
                 messages=[
                     {"role": "system", "content": AI_LAWYER_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
@@ -2968,7 +3014,7 @@ AI 분석을 이용하시려면 사이드바에서 OpenAI API 키를 입력해�
             if not client:
                 return self._generate_fallback_response(query, legal_data)
             response = client.chat.completions.create(
-                model="gpt-5.1",
+                model=OPENAI_MODEL_NAME,
                 messages=[
                     {"role": "system", "content": AI_LAWYER_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
@@ -3082,7 +3128,7 @@ AI 분석을 이용하시려면 사이드바에서 OpenAI API 키를 입력해�
             if not client:
                 return self._generate_fallback_response(query, legal_data)
             response = client.chat.completions.create(
-                model="gpt-5.1",
+                model=OPENAI_MODEL_NAME,
                 messages=[
                     {"role": "system", "content": AI_LAWYER_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
@@ -3669,6 +3715,14 @@ async def process_search(query: str, search_options: Dict):
                 with st.expander("📊 AI 필터링 분석", expanded=False):
                     st.markdown(f"**분석 요약:** {filter_summary}")
 
+        # 1차 수집 vs 2차 필터링 통계 표시
+        if search_mode == 'case_search' and legal_data.get('search_phase_stats'):
+            phase_stats = legal_data['search_phase_stats']
+            st.info(
+                f"📈 1차 수집 {phase_stats.get('phase1_collected', 0)}건 → "
+                f"2차 필터 {phase_stats.get('phase2_retained', 0)}건 (모델: {phase_stats.get('ai_model', '-')})"
+            )
+
         # 사건번호 검색 결과 표시
         case_info = legal_data.get('case_info', {})
         is_case_number_only = legal_data.get('is_case_number_only', False)
@@ -3912,7 +3966,7 @@ def main():
     with col2:
         st.markdown("""
         <div style="text-align: right; padding: 1rem;">
-            <small>v5.0 | GPT-5 + 법제처 API 전체 연동</small>
+            <small>v5.0 | GPT-5.2 + 법제처 API 전체 연동</small>
         </div>
         """, unsafe_allow_html=True)
 
@@ -3968,7 +4022,7 @@ def main():
 
         if openai_key:
             if openai_key.startswith('sk-'):
-                st.success("✅ GPT-5.1 AI 엔진 활성화")
+                st.success("✅ GPT-5.2 AI 엔진 활성화")
             else:
                 st.error("⚠️ OpenAI API 키 형식 오류 (sk-로 시작해야 함)")
         else:
@@ -4072,7 +4126,7 @@ def main():
         if not st.session_state.chat_history:
             st.markdown("""
             <div class="chat-message assistant-message">
-                <strong>⚖️ AI 변호사 (GPT-5):</strong><br>
+                <strong>⚖️ AI 변호사 (GPT-5.2):</strong><br>
                 안녕하세요, AI 변호사입니다.<br><br>
 
                 <b>🔍 2가지 검색 모드를 제공합니다:</b><br><br>
