@@ -664,8 +664,8 @@ class LegalAIEngine:
             'intent': '법률 정보 검색',
             'legal_issues': [],
             'law_names': [],
-            'keywords': basic_keywords,
-            'search_queries': basic_keywords[:3] if basic_keywords else [user_input],
+            'keywords': basic_keywords[:10] if len(basic_keywords) > 10 else basic_keywords,
+            'search_queries': basic_keywords[:10] if basic_keywords else [user_input],
             'search_priority': {
                 'laws': True,
                 'precedents': True,
@@ -703,8 +703,8 @@ class LegalAIEngine:
     "legal_issues": ["핵심 법적 쟁점 리스트 - 질문과 직접 관련된 것만"],
     "law_names": ["관련 법률명 (민법, 가사소송법 등)"],
     "legal_concepts": ["관련 법적 개념 (면접교섭권, 가처분 등)"],
-    "keywords": ["핵심 검색 키워드 5개"],
-    "search_queries": ["법제처 API 검색어 5개 - 핵심 쟁점 중심"],
+    "keywords": ["핵심 검색 키워드 10개 - 다양한 관점에서"],
+    "search_queries": ["법제처 API 검색어 10개 - 다양한 관점에서 최대한 많이 생성"],
     "search_priority": {{
         "laws": true/false,
         "precedents": true/false,
@@ -732,6 +732,13 @@ class LegalAIEngine:
    - 조사(의, 에, 를) 사용 금지
    - 4단어 이상 조합 금지
 
+4. **검색어 다양화 전략 (관련 자료 확보를 위해 필수!)**:
+   - 핵심 개념의 동의어/유사어 포함: "면접교섭권" → "면접교섭", "자녀면접"
+   - 관련 법률명 다양하게: "민법", "가사소송법", "가정폭력방지법"
+   - 상위/하위 개념 포함: "양육권" ↔ "친권", "이혼" ↔ "혼인관계"
+   - 쟁점별 검색어: "면접교섭권 제한", "면접교섭권 배제", "면접교섭권 침해"
+   - 절차/유형 검색어: "가처분", "본안소송", "조정"
+
 ## 예시 1 - 가족법
 질의: "이혼 소송 중 접근금지 가처분 상태에서 면접교섭권을 받을 수 있나요?"
 응답:
@@ -739,10 +746,10 @@ class LegalAIEngine:
     "intent": "접근금지 가처분과 면접교섭권의 관계 확인",
     "core_question": "접근금지 가처분이 있어도 자녀 면접교섭권을 행사할 수 있는지",
     "legal_issues": ["면접교섭권의 법적 성격", "접근금지 가처분의 효력 범위", "이혼소송 중 임시 면접교섭"],
-    "law_names": ["민법", "가사소송법", "가사소송규칙"],
-    "legal_concepts": ["면접교섭권", "접근금지가처분", "양육권", "임시처분"],
-    "keywords": ["면접교섭권", "접근금지", "가처분", "양육권", "이혼"],
-    "search_queries": ["면접교섭권", "면접교섭 가처분", "접근금지 가처분", "양육권", "임시처분"],
+    "law_names": ["민법", "가사소송법", "가사소송규칙", "가정폭력방지법"],
+    "legal_concepts": ["면접교섭권", "접근금지가처분", "양육권", "임시처분", "친권"],
+    "keywords": ["면접교섭권", "접근금지", "가처분", "양육권", "이혼", "친권", "자녀면접", "임시처분", "가사소송", "보호처분"],
+    "search_queries": ["면접교섭권", "면접교섭 가처분", "접근금지 가처분", "양육권", "임시처분", "면접교섭권 제한", "자녀면접", "친권", "이혼 자녀", "면접교섭 배제"],
     "search_priority": {{
         "laws": true,
         "precedents": true,
@@ -760,10 +767,10 @@ class LegalAIEngine:
     "intent": "대부업 등록요건 중 자기자본 기준 확인",
     "core_question": "대부업 등록에 필요한 자기자본 금액",
     "legal_issues": ["대부업 등록요건", "자기자본 산정기준"],
-    "law_names": ["대부업법", "대부업법 시행령"],
-    "legal_concepts": ["자기자본", "등록요건", "대부업"],
-    "keywords": ["대부업", "자기자본", "등록요건"],
-    "search_queries": ["대부업법 자기자본", "대부업 등록요건", "대부업법 시행령 자본"],
+    "law_names": ["대부업법", "대부업법 시행령", "금융업법"],
+    "legal_concepts": ["자기자본", "등록요건", "대부업", "영업허가"],
+    "keywords": ["대부업", "자기자본", "등록요건", "대부업법", "시행령", "금융업", "영업허가", "자본금", "등록기준", "대부중개"],
+    "search_queries": ["대부업법 자기자본", "대부업 등록요건", "대부업법 시행령", "대부업 자본금", "대부업 허가", "대부업등록", "금융업 자기자본", "대부중개업", "대부업 기준", "대부업 영업"],
     "search_priority": {{
         "laws": true,
         "precedents": false,
@@ -778,10 +785,10 @@ class LegalAIEngine:
             response = client.chat.completions.create(
                 model=OPENAI_MODEL_NAME,
                 messages=[
-                    {"role": "system", "content": "당신은 한국 법률 검색 전문가입니다. JSON 형식으로만 응답합니다."},
+                    {"role": "system", "content": "당신은 한국 법률 검색 전문가입니다. JSON 형식으로만 응답합니다. 관련 자료를 최대한 많이 확보하기 위해 다양한 검색어를 생성해야 합니다."},
                     {"role": "user", "content": prompt}
                 ],
-                max_completion_tokens=800
+                max_completion_tokens=1200
             )
 
             result_text = response.choices[0].message.content.strip()
@@ -809,9 +816,9 @@ class LegalAIEngine:
 
                 # 필수 필드 확인 및 보정
                 if 'search_queries' not in result or not result['search_queries']:
-                    result['search_queries'] = result.get('keywords', basic_keywords)[:5]
+                    result['search_queries'] = result.get('keywords', basic_keywords)[:10]
                 if 'keywords' not in result or not result['keywords']:
-                    result['keywords'] = basic_keywords
+                    result['keywords'] = basic_keywords[:10] if len(basic_keywords) > 10 else basic_keywords
                 if 'legal_issues' not in result:
                     result['legal_issues'] = []
                 if 'legal_concepts' not in result:
@@ -1157,18 +1164,21 @@ class LegalAIEngine:
         return []
 
     async def search_basic_legal_data(self, query: str, search_queries: List[str] = None) -> Dict:
-        """기본 법률 데이터 검색 (법령, 판례, 행정규칙 등) - AI 검색어 기반"""
-        # 검색 결과 수 설정 (판례, 유권해석 중심으로 대폭 증가)
+        """기본 법률 데이터 검색 (법령, 판례, 행정규칙 등) - AI 검색어 기반
+
+        1차 검색 단계: 관련 자료를 최대한 많이 확보하기 위해 수집량 극대화
+        """
+        # 검색 결과 수 설정 (1차 자료 확보를 위해 대폭 증가)
         display_counts = {
-            'law': 30,        # 현행법령(공포일)
-            'eflaw': 30,      # 현행법령(시행일)
-            'prec': 50,       # 판례 - 최대한 많이
-            'admrul': 20,     # 행정규칙
-            'ordin': 20,      # 자치법규
-            'detc': 30,       # 헌재결정례
-            'expc': 50,       # 법령해석례 - 최대한 많이
-            'decc': 50,       # 행정심판례 - 최대한 많이
-            'trty': 10,       # 조약
+            'law': 50,        # 현행법령(공포일) - 증가
+            'eflaw': 50,      # 현행법령(시행일) - 증가
+            'prec': 100,      # 판례 - 대폭 증가 (1차 확보 극대화)
+            'admrul': 30,     # 행정규칙 - 증가
+            'ordin': 30,      # 자치법규 - 증가
+            'detc': 50,       # 헌재결정례 - 증가
+            'expc': 100,      # 법령해석례 - 대폭 증가 (1차 확보 극대화)
+            'decc': 100,      # 행정심판례 - 대폭 증가 (1차 확보 극대화)
+            'trty': 20,       # 조약 - 증가
         }
 
         all_results = {target: [] for target in self.basic_targets.keys()}
@@ -1187,14 +1197,15 @@ class LegalAIEngine:
                     all_results[target_code].extend(results[idx])
 
         # AI가 생성한 추가 검색어로 확장 검색 (판례, 법령해석례, 행정심판례, 법령 대상)
+        # 1차 자료 확보를 위해 더 많은 검색어 활용
         if search_queries:
-            important_targets = ['prec', 'expc', 'decc', 'detc', 'law', 'eflaw']
-            for search_query in search_queries[:3]:  # 상위 3개 검색어만
+            important_targets = ['prec', 'expc', 'decc', 'detc', 'law', 'eflaw', 'admrul']
+            for search_query in search_queries[:7]:  # 상위 7개 검색어까지 확장
                 if search_query != query:  # 메인 쿼리와 다른 경우만
                     async with aiohttp.ClientSession() as session:
                         tasks = []
                         for target_code in important_targets:
-                            tasks.append(self._search_by_target(session, search_query, target_code, 20))
+                            tasks.append(self._search_by_target(session, search_query, target_code, 30))
 
                         kw_results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -1542,10 +1553,10 @@ class LegalAIEngine:
             logger.info(f"검색 실패 원인 분석 완료")
             return results
 
-        # 5. AI 필터링 적용 (2단계: 관련성 낮은 자료 제거)
+        # 5. AI 필터링 적용 (2단계: 관련성 낮은 자료 배제)
         if total_count > 0:
-            logger.info("AI 필터링 시작 (2단계 정밀 필터링)...")
-            results = self.filter_results_with_ai(query, results, max_results=25)
+            logger.info("AI 필터링 시작 (2단계: 관련성 없는 자료만 배제)...")
+            results = self.filter_results_with_ai(query, results, max_results=30)
             logger.info(f"필터링 후 결과: {results.get('filtered_count', total_count)}건")
             results['search_phase_stats'] = {
                 'phase1_collected': total_count,
@@ -2563,8 +2574,12 @@ class LegalAIEngine:
 
         return "\n".join(context_parts)
 
-    def filter_results_with_ai(self, query: str, legal_data: Dict, max_results: int = 10) -> Dict:
+    def filter_results_with_ai(self, query: str, legal_data: Dict, max_results: int = 30) -> Dict:
         """AI를 사용하여 수집된 결과 중 관련성 높은 자료만 필터링
+
+        2차 필터링 단계: 1차에서 대량 수집된 자료 중 관련성 낮은 것을 배제
+        - 사용자 의도와 관련성 있는 자료만 선별
+        - 최대 30건까지 선택 (기본값)
 
         사건 검색 모드에서 사용:
         1. 대량으로 수집된 결과를 AI가 분석
@@ -2716,38 +2731,57 @@ class LegalAIEngine:
 
         filter_prompt = f"""당신은 법률 자료 필터링 전문가입니다.
 
+## 목표:
+1차 검색에서 대량 수집된 자료 중 사용자 의도와 **관련성 없는 자료만 배제**합니다.
+관련성이 조금이라도 있다면 포함하는 것이 좋습니다.
+
 ## 사용자 질문:
 {query}{case_context}
 
 ## 수집된 법률 자료 목록 (총 {len(all_items[:100])}건):
 {items_text}
 
-## 지시사항:
-1. 사용자 질문의 **핵심 의도**를 먼저 파악하세요:
-   - 특정 사건번호를 찾는 경우: 해당 사건번호와 정확히 일치하거나 밀접하게 관련된 자료를 우선 선택
-   - 법적 쟁점을 묻는 경우: 해당 쟁점을 직접 다루는 자료 선택
-   - 일반적인 법률 질문: 관련 법령, 판례, 해석례 등 폭넓게 선택
+## 필터링 지시사항:
 
-2. 위 목록에서 사용자 질문과 관련성이 높은 자료의 번호를 선택하세요.
+### 1단계: 사용자 의도 파악
+- 특정 사건번호를 찾는 경우: 해당 사건번호와 일치하거나 관련된 자료 우선
+- 법적 쟁점을 묻는 경우: 해당 쟁점을 다루는 자료 선택
+- 일반적인 법률 질문: 관련 법령, 판례, 해석례 등 폭넓게 선택
 
-3. 선택 기준 (너무 엄격하게 필터링하지 마세요):
-   - 직접적으로 관련된 자료: 반드시 포함
-   - 간접적으로 관련된 자료: 참고할 가치가 있으면 포함
-   - 유사한 법적 쟁점을 다루는 자료: 포함 고려
+### 2단계: 포함 기준 (관대하게 적용)
+✅ **반드시 포함**:
+   - 사용자 질문의 핵심 쟁점을 직접 다루는 자료
+   - 언급된 법률명, 조문, 사건번호와 관련된 자료
+   - 유사한 사실관계나 법적 쟁점을 다루는 판례
 
-4. 최대 {max_results}개까지 선택할 수 있습니다.
+✅ **포함 권장**:
+   - 간접적으로 관련된 자료 (배경 이해에 도움)
+   - 유사한 법적 개념을 다루는 자료
+   - 참고할 가치가 있는 관련 해석례/심판례
 
-5. 관련성이 높은 순서대로 번호를 나열하세요.
+### 3단계: 배제 기준 (엄격하게 적용)
+❌ **배제할 자료만**:
+   - 사용자 질문과 전혀 무관한 분야의 자료
+   - 완전히 다른 법적 쟁점을 다루는 자료
+   - 제목/요약만으로도 명백히 관련 없음이 확인되는 자료
+
+### 중요: 애매한 경우 포함을 권장
+법률 검토에서는 관련 자료를 놓치는 것보다 포함하는 것이 더 안전합니다.
+확실하게 무관한 자료만 배제하고, 조금이라도 관련성이 있으면 포함하세요.
+
+최대 {max_results}개까지 선택할 수 있습니다.
+관련성이 높은 순서대로 번호를 나열하세요.
 
 ## 응답 형식 (JSON):
 {{
     "selected_indices": [0, 5, 12, ...],
     "reasoning": {{
-        "0": "이 판례는 사용자가 찾는 사건번호와 일치함",
-        "5": "관련 법적 쟁점을 다루고 있어 참고 가치가 있음",
+        "0": "선택 이유 (간단히)",
+        "5": "선택 이유 (간단히)",
         ...
     }},
-    "summary": "선택 이유 종합 설명"
+    "excluded_reason": "배제된 자료들의 공통적인 배제 이유",
+    "summary": "필터링 결과 요약"
 }}
 
 JSON 형식으로만 응답하세요."""
@@ -2767,10 +2801,10 @@ JSON 형식으로만 응답하세요."""
             response = client.chat.completions.create(
                 model=OPENAI_MODEL_NAME,
                 messages=[
-                    {"role": "system", "content": "당신은 법률 자료 관련성 평가 전문가입니다. JSON 형식으로만 응답하세요."},
+                    {"role": "system", "content": "당신은 법률 자료 관련성 평가 전문가입니다. 1차 검색에서 수집된 자료 중 사용자 의도와 관련 없는 자료만 배제합니다. 관련성이 조금이라도 있으면 포함하는 것이 원칙입니다. JSON 형식으로만 응답하세요."},
                     {"role": "user", "content": filter_prompt}
                 ],
-                max_completion_tokens=1500,
+                max_completion_tokens=2000,
                 response_format={"type": "json_object"}
             )
 
